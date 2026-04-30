@@ -1,0 +1,243 @@
+version: '3.9'
+
+# ADVERSA — Multi-node AXL mesh deployment
+# Each agent runs its own AXL node instance (separate containers).
+# For local demo: all on same Docker network, different ports.
+# For production: each container on a separate machine.
+
+networks:
+  adversa-mesh:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  axl-data-gateway:
+  axl-data-security:
+  axl-data-performance:
+  axl-data-style:
+  axl-data-redteam:
+  axl-data-coder:
+  offline-data:
+
+x-agent-base: &agent-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  env_file: .env
+  depends_on:
+    - axl-gateway
+  networks:
+    - adversa-mesh
+  restart: unless-stopped
+  environment:
+    LOG_LEVEL: info
+
+services:
+
+  # ─── AXL Nodes (one per agent) ───────────────────────────────────────────────
+
+  axl-gateway:
+    image: ghcr.io/gensyn-ai/axl:latest
+    command: >
+      axl --port 9002
+          --private-key /keys/gateway-private.pem
+          --peer /dns4/axl-security/tcp/9002
+          --peer /dns4/axl-redteam/tcp/9002
+    volumes:
+      - ./keys:/keys:ro
+      - axl-data-gateway:/data
+    ports:
+      - "9002:9002"
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.10
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9002/topology"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  axl-security:
+    image: ghcr.io/gensyn-ai/axl:latest
+    command: >
+      axl --port 9002
+          --private-key /keys/security-private.pem
+          --peer /dns4/axl-gateway/tcp/9002
+    volumes:
+      - ./keys:/keys:ro
+      - axl-data-security:/data
+    ports:
+      - "9003:9002"
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.11
+    restart: unless-stopped
+
+  axl-performance:
+    image: ghcr.io/gensyn-ai/axl:latest
+    command: >
+      axl --port 9002
+          --private-key /keys/performance-private.pem
+          --peer /dns4/axl-gateway/tcp/9002
+    volumes:
+      - ./keys:/keys:ro
+      - axl-data-performance:/data
+    ports:
+      - "9004:9002"
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.12
+    restart: unless-stopped
+
+  axl-style:
+    image: ghcr.io/gensyn-ai/axl:latest
+    command: >
+      axl --port 9002
+          --private-key /keys/style-private.pem
+          --peer /dns4/axl-gateway/tcp/9002
+    volumes:
+      - ./keys:/keys:ro
+      - axl-data-style:/data
+    ports:
+      - "9005:9002"
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.13
+    restart: unless-stopped
+
+  axl-redteam:
+    image: ghcr.io/gensyn-ai/axl:latest
+    command: >
+      axl --port 9002
+          --private-key /keys/redteam-private.pem
+          --peer /dns4/axl-gateway/tcp/9002
+    volumes:
+      - ./keys:/keys:ro
+      - axl-data-redteam:/data
+    ports:
+      - "9006:9002"
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.14
+    restart: unless-stopped
+
+  axl-coder:
+    image: ghcr.io/gensyn-ai/axl:latest
+    command: >
+      axl --port 9002
+          --private-key /keys/coder-private.pem
+          --peer /dns4/axl-gateway/tcp/9002
+    volumes:
+      - ./keys:/keys:ro
+      - axl-data-coder:/data
+    ports:
+      - "9007:9002"
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.15
+    restart: unless-stopped
+
+  # ─── Agent Services ───────────────────────────────────────────────────────────
+
+  agent-gateway:
+    <<: *agent-base
+    environment:
+      AGENT_ROLE: gateway
+      AXL_NODE_PORT: 9002
+      DASHBOARD_PORT: "3001"
+      DASHBOARD_HOST: "0.0.0.0"
+    depends_on:
+      axl-gateway:
+        condition: service_healthy
+    ports:
+      - "3001:3001"   # Dashboard
+      - "3002:3002"   # GitHub webhook
+    volumes:
+      - offline-data:/app/data
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.20
+    extra_hosts:
+      - "axl-gateway:172.20.0.10"
+
+  agent-security:
+    <<: *agent-base
+    environment:
+      AGENT_ROLE: security
+      AXL_NODE_PORT: 9002
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.21
+    extra_hosts:
+      - "axl-security:172.20.0.11"
+    depends_on:
+      - axl-security
+
+  agent-performance:
+    <<: *agent-base
+    environment:
+      AGENT_ROLE: performance
+      AXL_NODE_PORT: 9002
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.22
+    extra_hosts:
+      - "axl-performance:172.20.0.12"
+    depends_on:
+      - axl-performance
+
+  agent-style:
+    <<: *agent-base
+    environment:
+      AGENT_ROLE: style
+      AXL_NODE_PORT: 9002
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.23
+    extra_hosts:
+      - "axl-style:172.20.0.13"
+    depends_on:
+      - axl-style
+
+  agent-redteam:
+    <<: *agent-base
+    environment:
+      AGENT_ROLE: redteam
+      AXL_NODE_PORT: 9002
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.24
+    extra_hosts:
+      - "axl-redteam:172.20.0.14"
+    depends_on:
+      - axl-redteam
+
+  agent-coder:
+    <<: *agent-base
+    environment:
+      AGENT_ROLE: coder
+      AXL_NODE_PORT: 9002
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.25
+    extra_hosts:
+      - "axl-coder:172.20.0.15"
+    depends_on:
+      - axl-coder
+
+  # ─── KeeperHub MCP Server ─────────────────────────────────────────────────────
+
+  keeperhub-mcp:
+    image: keeperhub/keeperhub-mcp:latest
+    environment:
+      PORT: "3000"
+      MCP_API_KEY: "${KEEPERHUB_MCP_API_KEY}"
+      KEEPERHUB_API_KEY: "${KEEPERHUB_API_KEY}"
+    ports:
+      - "3000:3000"
+    networks:
+      - adversa-mesh
+    restart: unless-stopped

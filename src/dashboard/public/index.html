@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0d0d0f" />
+  <title>ADVERSA — AI Code Review Swarm</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="root">
+    <!-- Offline indicator always visible -->
+    <div id="offline-banner" class="offline-banner hidden">
+      <span class="offline-icon">⚡</span>
+      <span id="offline-text">MESH ONLY — No Internet</span>
+      <span id="queue-count" class="queue-badge">0 queued</span>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <div class="logo">
+          <span class="logo-icon">⚔</span>
+          <span class="logo-text">ADVERSA</span>
+        </div>
+        <div class="status-pill" id="swarm-status">
+          <span class="status-dot active"></span>
+          <span>Swarm Active</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="connectivity-badge" id="conn-badge">
+          <span class="conn-dot" id="conn-dot"></span>
+          <span id="conn-text">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Mobile tab navigation -->
+    <nav class="tab-nav" id="tab-nav">
+      <button class="tab-btn active" data-tab="mesh" onclick="switchTab('mesh')">
+        <span class="tab-icon">🌐</span>
+        <span class="tab-label">Mesh</span>
+      </button>
+      <button class="tab-btn" data-tab="pipeline" onclick="switchTab('pipeline')">
+        <span class="tab-icon">⚙</span>
+        <span class="tab-label">Pipeline</span>
+      </button>
+      <button class="tab-btn" data-tab="debate" onclick="switchTab('debate')">
+        <span class="tab-icon">⚡</span>
+        <span class="tab-label">Debate</span>
+      </button>
+      <button class="tab-btn" data-tab="agents" onclick="switchTab('agents')">
+        <span class="tab-icon">🤖</span>
+        <span class="tab-label">Agents</span>
+      </button>
+      <button class="tab-btn" data-tab="control" onclick="switchTab('control')">
+        <span class="tab-icon">🎮</span>
+        <span class="tab-label">Control</span>
+      </button>
+    </nav>
+
+    <!-- Main content grid -->
+    <main class="main-grid">
+
+      <!-- PANEL: Mesh Topology -->
+      <section class="panel" id="panel-mesh" data-panel="mesh">
+        <div class="panel-header">
+          <h2>AXL Mesh Topology</h2>
+          <div class="panel-meta" id="mesh-peer-count">0 peers</div>
+        </div>
+        <div class="mesh-container">
+          <canvas id="mesh-canvas"></canvas>
+          <div class="mesh-legend">
+            <span class="legend-item"><span class="legend-dot" style="background:#8B5CF6"></span>Online</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#374151"></span>Offline</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#F59E0B"></span>Busy</span>
+            <span class="legend-item"><span class="legend-dot" style="background:#EF4444"></span>Red-Team</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- PANEL: Review Pipeline -->
+      <section class="panel" id="panel-pipeline" data-panel="pipeline">
+        <div class="panel-header">
+          <h2>Review Pipeline</h2>
+          <div class="panel-meta" id="pipeline-status">Idle</div>
+        </div>
+        <div class="pipeline-phases" id="pipeline-phases">
+          <!-- Phases injected by JS -->
+        </div>
+        <div class="consensus-panel" id="consensus-panel">
+          <h3>Consensus</h3>
+          <div class="vote-bars" id="vote-bars"></div>
+          <div class="consensus-result hidden" id="consensus-result"></div>
+        </div>
+      </section>
+
+      <!-- PANEL: Adversarial Debate -->
+      <section class="panel panel-debate" id="panel-debate" data-panel="debate">
+        <div class="panel-header">
+          <h2>Adversarial Debate</h2>
+          <div class="panel-meta" id="debate-round">Round 0</div>
+        </div>
+        <div class="debate-feed" id="debate-feed">
+          <div class="debate-empty">
+            <span>⚔</span>
+            <p>Waiting for first PR review...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- PANEL: Agent Cards -->
+      <section class="panel" id="panel-agents" data-panel="agents">
+        <div class="panel-header">
+          <h2>Agents</h2>
+          <div class="panel-meta" id="agents-online-count">0 online</div>
+        </div>
+        <div class="agent-cards" id="agent-cards">
+          <!-- Agent cards injected by JS -->
+        </div>
+      </section>
+
+      <!-- PANEL: Interactive Controls -->
+      <section class="panel panel-control" id="panel-control" data-panel="control">
+        <div class="panel-header">
+          <h2>Control Panel</h2>
+          <div class="panel-meta">Judge Interface</div>
+        </div>
+
+        <!-- Goal injection -->
+        <div class="control-section">
+          <label class="control-label">Inject Review Goal</label>
+          <div class="control-input-row">
+            <input
+              type="text"
+              id="goal-input"
+              class="control-input"
+              placeholder="e.g., Add rate limiting to API endpoints"
+              maxlength="200"
+            />
+            <button class="btn btn-primary" onclick="injectGoal()">Send ⚡</button>
+          </div>
+        </div>
+
+        <!-- Manual PR trigger -->
+        <div class="control-section">
+          <label class="control-label">Trigger Manual Review</label>
+          <div class="control-input-row">
+            <input
+              type="url"
+              id="pr-url-input"
+              class="control-input"
+              placeholder="https://github.com/owner/repo/pull/42"
+            />
+            <button class="btn btn-secondary" onclick="triggerReview()">Review</button>
+          </div>
+        </div>
+
+        <!-- Advisory vote -->
+        <div class="control-section">
+          <label class="control-label">Cast Advisory Vote</label>
+          <div class="vote-buttons">
+            <button class="btn btn-approve" onclick="castVote('approve')">
+              ✅ Approve
+            </button>
+            <button class="btn btn-reject" onclick="castVote('reject')">
+              ❌ Reject
+            </button>
+          </div>
+        </div>
+
+        <!-- Offline mode -->
+        <div class="control-section">
+          <label class="control-label">Internet Connectivity</label>
+          <div class="toggle-row">
+            <button class="btn btn-danger" id="offline-toggle" onclick="toggleOffline()">
+              🔌 Kill Internet
+            </button>
+            <span class="toggle-status" id="toggle-status">Connected</span>
+          </div>
+        </div>
+
+        <!-- QR Code -->
+        <div class="control-section qr-section">
+          <label class="control-label">Share Dashboard</label>
+          <div class="qr-container">
+            <img id="qr-code" src="" alt="Dashboard QR Code" class="qr-image" />
+            <div class="qr-url" id="qr-url"></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

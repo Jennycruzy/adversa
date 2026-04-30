@@ -1,0 +1,61 @@
+{
+  "name": "adversa",
+  "version": "1.0.0",
+  "description": "Adversarial AI code review swarm on AXL mesh with verifiable 0G inference and on-chain iNFT agents",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node --esm src/index.ts",
+    "start:gateway": "AGENT_ROLE=gateway ts-node src/index.ts",
+    "start:security": "AGENT_ROLE=security ts-node src/index.ts",
+    "start:performance": "AGENT_ROLE=performance ts-node src/index.ts",
+    "start:style": "AGENT_ROLE=style ts-node src/index.ts",
+    "start:redteam": "AGENT_ROLE=redteam ts-node src/index.ts",
+    "start:coder": "AGENT_ROLE=coder ts-node src/index.ts",
+    "dashboard": "ts-node src/dashboard/server.ts",
+    "test": "jest --passWithNoTests",
+    "compile": "cd contracts && npx hardhat compile",
+    "deploy": "cd contracts && npx hardhat run scripts/deploy.ts --network 0g-testnet",
+    "deploy:local": "cd contracts && npx hardhat run scripts/deploy.ts --network localhost",
+    "mint-agents": "cd contracts && npx hardhat run scripts/mint-agents.ts --network 0g-testnet",
+    "setup": "bash scripts/setup-axl-nodes.sh",
+    "demo": "bash scripts/demo.sh"
+  },
+  "dependencies": {
+    "@0glabs/0g-serving-broker": "^2.0.0",
+    "@0gfoundation/0g-ts-sdk": "^1.2.8",
+    "@octokit/rest": "^20.1.1",
+    "@octokit/webhooks": "^13.3.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.1",
+    "express": "^4.19.2",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5",
+    "uuid": "^10.0.0",
+    "winston": "^3.13.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.14.9",
+    "@types/qrcode": "^1.5.5",
+    "@types/uuid": "^10.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.3"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/test/**/*.test.ts", "**/*.test.ts"],
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    }
+  }
+}
