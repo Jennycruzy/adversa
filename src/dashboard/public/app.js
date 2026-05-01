@@ -1,8 +1,7 @@
-/* ADVERSA Dashboard — Real-time Socket.IO client */
 'use strict';
 
 // ─── State ────────────────────────────────────────────────────────────────────
-const state = {
+const S = {
   agents: {},
   debateRound: 0,
   offlineMode: false,
@@ -10,680 +9,633 @@ const state = {
   currentPhase: -1,
   votes: {},
   connected: false,
+  stats: { reviews: 0, exploits: 0, teeVerified: 0 },
+  tee: { total: 0, verified: 0, unverified: 0, providers: [], chats: [] },
 };
 
-const ROLE_ICONS = {
-  gateway: '🌐', security: '🛡', performance: '⚡', style: '✨', redteam: '☠', coder: '💻',
+const ICONS = {
+  gateway: '⬡', security: '◈', performance: '◆', style: '◇', redteam: '☠', coder: '⌥',
 };
-const ROLE_COLORS = {
-  gateway: '#10B981', security: '#3B82F6', performance: '#F59E0B',
-  style: '#8B5CF6', redteam: '#EF4444', coder: '#22C55E',
+const COLORS = {
+  gateway: '#14B8A6', security: '#3B82F6', performance: '#F59E0B',
+  style: '#8B5CF6', redteam: '#EF4444', coder: '#10B981',
+};
+const HEX_FILLS = {
+  gateway: '#14B8A6', security: '#3B82F6', performance: '#F59E0B',
+  style: '#7C3AED',  redteam: '#EF4444',  coder: '#10B981',
 };
 
-const PIPELINE_PHASES = [
-  { id: 0, name: 'Goal Injection', detail: 'Coder receives task' },
-  { id: 1, name: 'Topology', detail: 'Discovering online agents' },
-  { id: 2, name: 'Fan-out', detail: 'MCP calls to reviewers' },
-  { id: 3, name: 'Red-Team', detail: 'Exploit scan + A2A debate' },
-  { id: 4, name: 'Guardrails', detail: 'Human presence detection' },
-  { id: 5, name: 'Consensus', detail: 'Weighted vote aggregation' },
-  { id: 6, name: 'Action', detail: 'Merge / reject + record' },
+const PHASES = [
+  { id: 0, name: 'Goal Injection',   detail: 'Coder receives task via GossipSub' },
+  { id: 1, name: 'Topology',         detail: 'Discovering online agents' },
+  { id: 2, name: 'Fan-out',          detail: 'MCP calls to all reviewers (parallel)' },
+  { id: 3, name: 'Red-Team',         detail: 'Exploit scan + A2A adversarial debate' },
+  { id: 4, name: 'Guardrails',       detail: 'Human presence detection' },
+  { id: 5, name: 'Consensus',        detail: 'Weighted vote convergecast' },
+  { id: 6, name: 'Action',           detail: 'Merge / reject + 0G Chain record' },
 ];
 
-// ─── Socket.IO Connection ─────────────────────────────────────────────────────
+// ─── Socket ───────────────────────────────────────────────────────────────────
 const socket = io({ transports: ['websocket', 'polling'] });
 
-socket.on('connect', () => {
-  state.connected = true;
-  updateConnBadge(true);
-  console.log('Dashboard connected via Socket.IO');
+socket.on('connect',    () => { S.connected = true;  setConn(true); });
+socket.on('disconnect', () => { S.connected = false; setConn(false); });
+socket.on('connected',  d  => { S.offlineMode = d.offlineMode; syncOffline(); loadQR(d.dashboardUrl); });
+
+// Agents
+socket.on('agent-online',  d => { S.agents[d.peerId] = { ...S.agents[d.peerId], ...d, online: true, status: 'idle' }; refreshAgents(); refreshMesh(); bumpStat('agents', Object.values(S.agents).filter(a=>a.online).length, true); });
+socket.on('agent-offline', d => { if (S.agents[d.peerId]) S.agents[d.peerId].online = false; refreshAgents(); refreshMesh(); });
+socket.on('agent-status',  d => { if (S.agents[d.peerId]) S.agents[d.peerId].status = d.status; refreshAgents(); refreshMesh(); });
+
+// Pipeline
+socket.on('pipeline-start',    d => { S.currentPhase = 0; S.votes = {}; renderPhases(); clearVerdict(); el('pipeline-status').innerHTML = `<span class="badge badge-cyan">PR #${d.prNumber}</span>`; S.stats.reviews++; animStat('stat-reviews', S.stats.reviews); });
+socket.on('pipeline-phase',    d => { S.currentPhase = d.phase; renderPhases(); });
+socket.on('pipeline-complete', d => {
+  S.currentPhase = 7; renderPhases();
+  showVerdict(d.approved, d.confidenceScore);
+  if (d.txHash) txToast(d.txHash, d.action);
+  const badge = d.approved ? '<span class="badge badge-green">APPROVED</span>' : '<span class="badge badge-red">REJECTED</span>';
+  el('pipeline-status').innerHTML = badge;
+  if (d.exploitsFound) { S.stats.exploits += d.exploitsFound; animStat('stat-exploits', S.stats.exploits); }
+});
+socket.on('pipeline-error', d => {
+  el('pipeline-status').innerHTML = '<span class="badge badge-red">Error</span>';
+  addMsg({ fromRole: 'gateway', type: 'error', content: `Pipeline error: ${d.error}`, ts: Date.now() });
 });
 
-socket.on('disconnect', () => {
-  state.connected = false;
-  updateConnBadge(false);
-});
+// Debate / MCP
+socket.on('mcp-call',       d => flashEdge(d.from || 'gateway', d.to || d.toRole, '#7C3AED'));
+socket.on('a2a-debate',     d => { S.debateRound++; el('debate-round').textContent = `Round ${S.debateRound}`; addMsg({ fromRole: d.fromRole || 'redteam', type: d.type, content: d.content, severity: d.severity, cvssScore: d.cvssScore, ts: d.timestamp, conf: 70, isAtk: true }); flashEdge(d.from, d.to, '#EF4444'); });
+socket.on('exploit-attempt', d => addMsg({ fromRole: 'redteam', type: 'exploit_scan', content: `${d.exploitCount || 0} exploit(s) found, ${d.criticalCount || 0} critical`, ts: d.timestamp, conf: 90, isAtk: true }));
+socket.on('exploit-defense', d => { addMsg({ fromRole: 'security', type: d.mitigated ? 'defense' : 'concession', content: d.evidence || 'Analyzing...', ts: d.timestamp, conf: d.confidence || 70 }); flashEdge(d.from, 'gateway', '#10B981'); });
+socket.on('review-finding',  d => { if (d.teeVerified) { S.stats.teeVerified++; animStat('stat-tee', S.stats.teeVerified); } });
 
-socket.on('connected', (data) => {
-  state.offlineMode = data.offlineMode;
-  updateOfflineBanner();
-  loadQRCode(data.dashboardUrl);
-});
+// Consensus
+socket.on('consensus-vote',   d => { S.votes[d.agentRole] = d; renderVotes(); });
+socket.on('consensus-result', d => showVerdict(d.approved, d.confidenceScore));
 
-// ─── AXL Mesh Events ──────────────────────────────────────────────────────────
-socket.on('agent-online', (data) => {
-  state.agents[data.peerId] = { ...state.agents[data.peerId], ...data, online: true, status: 'idle' };
-  renderAgentCards();
-  renderMesh();
-  updateAgentCount();
-});
+// Offline / chain
+socket.on('offline-status', d => { S.offlineMode = !d.online; syncOffline(); });
+socket.on('action-queued',  d => { S.queueLength = d.queueLength; syncOffline(); addMsg({ fromRole: 'gateway', type: 'queue', content: `Queued: ${d.actionType} (${d.queueLength} total)`, ts: Date.now() }); });
+socket.on('action-synced',  d => { S.queueLength = d.remaining; syncOffline(); });
+socket.on('sync-complete',  d => { S.queueLength = 0; syncOffline(); addMsg({ fromRole: 'gateway', type: 'sync', content: `Sync complete — ${d.completed} actions replayed`, ts: Date.now() }); });
+socket.on('chain-tx',       d => { txToast(d.txHash, d.action); addMsg({ fromRole: 'gateway', type: 'chain-tx', content: `On-chain: ${d.action} — ${d.txHash?.slice(0,20)}...`, ts: Date.now() }); });
+socket.on('inft-update',    d => { const a = Object.values(S.agents).find(x=>x.role===d.role); if(a) a.evolutionCount=(a.evolutionCount||0)+1; refreshAgents(); addMsg({ fromRole: d.role, type: 'inft', content: `iNFT ${d.action}: ${d.role} agent (evolution #${d.version||'?'})`, ts: Date.now() }); });
+socket.on('human-detected', d => addMsg({ fromRole: 'human', type: 'human', content: `Human detected — auto-merge paused. ${d.reason||''}`, ts: Date.now() }));
+socket.on('goal-injected',  d => addMsg({ fromRole: d.source || 'dashboard', type: 'goal', content: `Goal: "${d.goal}"`, ts: d.timestamp }));
+socket.on('gossip-broadcast', d => meshGossip(d.topic));
 
-socket.on('agent-offline', (data) => {
-  if (state.agents[data.peerId]) {
-    state.agents[data.peerId].online = false;
+// TEE
+socket.on('tee-attestation', d => {
+  if (d.totalInferences !== undefined) {
+    S.tee.total    = d.totalInferences;
+    S.tee.verified = d.verified;
+    S.tee.unverified = d.unverified;
+    syncTEE();
   }
-  renderAgentCards();
-  renderMesh();
-  updateAgentCount();
+  S.stats.teeVerified = d.verified || S.stats.teeVerified;
+  animStat('stat-tee', S.stats.teeVerified);
 });
 
-socket.on('agent-status', (data) => {
-  if (state.agents[data.peerId]) {
-    state.agents[data.peerId].status = data.status;
-    renderAgentCards();
-  }
-  renderMesh();
-});
-
-// ─── Pipeline Events ──────────────────────────────────────────────────────────
-socket.on('pipeline-start', (data) => {
-  state.currentPhase = 0;
-  state.votes = {};
-  renderPipelinePhases();
-  clearConsensus();
-  document.getElementById('pipeline-status').textContent = `PR #${data.prNumber}`;
-});
-
-socket.on('pipeline-phase', (data) => {
-  state.currentPhase = data.phase;
-  renderPipelinePhases();
-  updatePhaseDetail(data);
-});
-
-socket.on('pipeline-complete', (data) => {
-  state.currentPhase = 7; // All done
-  renderPipelinePhases();
-  showConsensusResult(data.approved, data.confidenceScore);
-  if (data.txHash) showTxToast(data.txHash);
-  document.getElementById('pipeline-status').textContent = data.approved ? 'APPROVED' : 'REJECTED';
-});
-
-socket.on('pipeline-error', (data) => {
-  document.getElementById('pipeline-status').textContent = 'Error';
-  appendDebateMessage({
-    fromRole: 'gateway',
-    type: 'system',
-    content: `Pipeline error: ${data.error}`,
-    timestamp: Date.now(),
-    confidence: 0,
-  });
-});
-
-// ─── MCP Call Events ──────────────────────────────────────────────────────────
-socket.on('mcp-call', (data) => {
-  renderMeshEdge(data.from || 'gateway', data.to || data.toRole, '#8B5CF6');
-});
-
-// ─── Debate Events ────────────────────────────────────────────────────────────
-socket.on('a2a-debate', (data) => {
-  state.debateRound++;
-  document.getElementById('debate-round').textContent = `Round ${state.debateRound}`;
-  appendDebateMessage({
-    fromRole: data.fromRole || 'redteam',
-    type: data.type,
-    content: data.content,
-    severity: data.severity,
-    cvssScore: data.cvssScore,
-    timestamp: data.timestamp || Date.now(),
-    confidence: 70,
-    isAttack: data.type === 'exploit_challenge' || data.type === 'counter_attack',
-  });
-  renderMeshEdge(data.from, data.to, '#EF4444');
-});
-
-socket.on('exploit-attempt', (data) => {
-  appendDebateMessage({
-    fromRole: 'redteam',
-    type: 'exploit_scan',
-    content: `Found ${data.exploitCount} exploit(s), ${data.criticalCount} critical`,
-    timestamp: data.timestamp || Date.now(),
-    confidence: 90,
-    isAttack: true,
-  });
-});
-
-socket.on('exploit-defense', (data) => {
-  appendDebateMessage({
-    fromRole: 'security',
-    type: data.mitigated ? 'defense' : 'concession',
-    content: data.evidence || 'Analyzing exploit...',
-    timestamp: data.timestamp || Date.now(),
-    confidence: data.confidence || 70,
-    mitigated: data.mitigated,
-    isAttack: false,
-  });
-  renderMeshEdge(data.from, 'gateway', '#10B981');
-});
-
-// ─── Consensus Events ─────────────────────────────────────────────────────────
-socket.on('consensus-vote', (data) => {
-  state.votes[data.agentRole] = data;
-  renderVoteBars();
-});
-
-socket.on('consensus-result', (data) => {
-  showConsensusResult(data.approved, data.confidenceScore);
-});
-
-// ─── Offline / Sync Events ────────────────────────────────────────────────────
-socket.on('offline-status', (data) => {
-  state.offlineMode = !data.online;
-  updateOfflineBanner();
-});
-
-socket.on('action-queued', (data) => {
-  state.queueLength = data.queueLength;
-  updateOfflineBanner();
-  appendDebateMessage({
-    fromRole: 'gateway',
-    type: 'queue',
-    content: `Queued: ${data.actionType} (${data.queueLength} total)`,
-    timestamp: Date.now(),
-    confidence: 100,
-  });
-});
-
-socket.on('action-synced', (data) => {
-  state.queueLength = data.remaining;
-  updateOfflineBanner();
-});
-
-socket.on('sync-complete', (data) => {
-  state.queueLength = 0;
-  updateOfflineBanner();
-  appendDebateMessage({
-    fromRole: 'gateway',
-    type: 'sync',
-    content: `Sync complete — ${data.completed} actions replayed`,
-    timestamp: Date.now(),
-    confidence: 100,
-  });
-});
-
-// ─── Chain TX Events ──────────────────────────────────────────────────────────
-socket.on('chain-tx', (data) => {
-  showTxToast(data.txHash, data.action);
-  appendDebateMessage({
-    fromRole: 'gateway',
-    type: 'chain-tx',
-    content: `On-chain: ${data.action} — tx ${data.txHash?.slice(0, 18)}...`,
-    timestamp: Date.now(),
-    confidence: 100,
-  });
-});
-
-socket.on('inft-update', (data) => {
-  const agent = Object.values(state.agents).find(a => a.role === data.role);
-  if (agent) agent.evolutionCount = (agent.evolutionCount || 0) + 1;
-  renderAgentCards();
-  appendDebateMessage({
-    fromRole: data.role || 'gateway',
-    type: 'inft',
-    content: `iNFT ${data.action}: ${data.role} agent (evolution #${data.version || '?'})`,
-    timestamp: Date.now(),
-    confidence: 100,
-  });
-});
-
-socket.on('human-detected', (data) => {
-  appendDebateMessage({
-    fromRole: 'human',
-    type: 'human',
-    content: `Human activity detected — auto-merge paused. ${data.reason || ''}`,
-    timestamp: Date.now(),
-    confidence: 100,
-  });
-});
-
-socket.on('goal-injected', (data) => {
-  appendDebateMessage({
-    fromRole: data.source || 'dashboard',
-    type: 'goal',
-    content: `Goal injected: "${data.goal}"`,
-    timestamp: data.timestamp || Date.now(),
-    confidence: 100,
-  });
-});
-
-socket.on('gossip-broadcast', (data) => {
-  // Animate a ripple across all mesh nodes to show gossip propagation
-  animateMeshGossip(data.topic);
-});
-
-// ─── Render: Connectivity ─────────────────────────────────────────────────────
-function updateConnBadge(online) {
-  const dot = document.getElementById('conn-dot');
-  const text = document.getElementById('conn-text');
-  if (dot && text) {
-    dot.className = 'conn-dot ' + (online ? 'online' : 'offline');
-    text.textContent = online ? 'Connected' : 'Disconnected';
-  }
+// ─── Connectivity ─────────────────────────────────────────────────────────────
+function setConn(on) {
+  const dot = el('conn-dot'), txt = el('conn-text');
+  if (dot) dot.className = 'conn-dot ' + (on ? 'online' : 'offline');
+  if (txt) txt.textContent = on ? 'Connected' : 'Disconnected';
 }
 
-// ─── Render: Offline Banner ───────────────────────────────────────────────────
-function updateOfflineBanner() {
-  const banner = document.getElementById('offline-banner');
-  const text = document.getElementById('offline-text');
-  const badge = document.getElementById('queue-count');
-  const toggleBtn = document.getElementById('offline-toggle');
-  const toggleStatus = document.getElementById('toggle-status');
-
-  if (banner) banner.classList.toggle('hidden', !state.offlineMode);
-  if (text) text.textContent = state.offlineMode ? 'MESH ONLY — No Internet' : 'FULLY CONNECTED';
-  if (badge) badge.textContent = `${state.queueLength} queued`;
-  if (toggleBtn) {
-    toggleBtn.textContent = state.offlineMode ? '🌐 Restore Internet' : '🔌 Kill Internet';
-    toggleBtn.className = state.offlineMode ? 'btn btn-secondary' : 'btn btn-danger';
-  }
-  if (toggleStatus) {
-    toggleStatus.textContent = state.offlineMode ? 'MESH ONLY' : 'Connected';
-    toggleStatus.style.color = state.offlineMode ? '#F97316' : '#22C55E';
-  }
+function syncOffline() {
+  const banner = el('offline-banner');
+  if (banner) banner.classList.toggle('hidden', !S.offlineMode);
+  const qc = el('queue-count'); if(qc) qc.textContent = `${S.queueLength} queued`;
+  const tog = el('offline-toggle');
+  if (tog) { tog.textContent = S.offlineMode ? 'Restore Internet' : 'Kill Internet'; tog.className = 'cmd-btn ' + (S.offlineMode ? 'secondary' : 'danger'); }
+  const ts = el('toggle-status');
+  if (ts) { ts.textContent = S.offlineMode ? 'MESH ONLY' : 'Connected'; ts.style.color = S.offlineMode ? '#F59E0B' : '#10B981'; }
 }
 
-// ─── Render: Pipeline Phases ──────────────────────────────────────────────────
-function renderPipelinePhases() {
-  const container = document.getElementById('pipeline-phases');
-  if (!container) return;
+// ─── Stats ────────────────────────────────────────────────────────────────────
+function animStat(id, val, replace) {
+  const e = el(id);
+  if (!e) return;
+  e.textContent = val;
+  e.classList.add('stat-flash');
+  setTimeout(() => e.classList.remove('stat-flash'), 500);
+}
+function bumpStat(key, val) {
+  const map = { agents: 'stat-agents', reviews: 'stat-reviews', exploits: 'stat-exploits', tee: 'stat-tee' };
+  animStat(map[key], val);
+}
 
-  container.innerHTML = PIPELINE_PHASES.map(phase => {
-    const cls = phase.id < state.currentPhase ? 'complete'
-      : phase.id === state.currentPhase ? 'active' : '';
+// ─── Phases ───────────────────────────────────────────────────────────────────
+function renderPhases() {
+  const c = el('pipeline-phases'); if (!c) return;
+  c.innerHTML = PHASES.map(p => {
+    const cls = p.id < S.currentPhase ? 'complete' : p.id === S.currentPhase ? 'active' : '';
+    const numContent = cls === 'complete' ? '✓' : cls === 'active' ? '▸' : p.id;
     return `<div class="phase-step ${cls}">
-      <div class="phase-number">${phase.id === state.currentPhase ? '▶' : phase.id < state.currentPhase ? '✓' : phase.id}</div>
+      <div class="phase-num">${numContent}</div>
       <div class="phase-info">
-        <div class="phase-name">${phase.name}</div>
-        <div class="phase-detail">${phase.detail}</div>
+        <div class="phase-name">${p.name}</div>
+        <div class="phase-detail">${p.detail}</div>
       </div>
     </div>`;
   }).join('');
 }
 
-function updatePhaseDetail(data) {
-  // Could update specific phase detail text with real-time data
+function clearVerdict() {
+  const r = el('consensus-result'); if(r){ r.className='consensus-verdict hidden'; r.textContent=''; }
+  const c = el('consensus-confidence'); if(c) c.textContent = '—';
 }
 
-function clearConsensus() {
-  const result = document.getElementById('consensus-result');
-  if (result) { result.className = 'consensus-result hidden'; result.textContent = ''; }
+function showVerdict(approved, score) {
+  const r = el('consensus-result'); if (!r) return;
+  const pct = ((score||0)/100).toFixed(1);
+  r.className = `consensus-verdict ${approved ? 'approved' : 'rejected'}`;
+  r.innerHTML = `${approved ? '◉ APPROVED' : '✕ REJECTED'}<br><small style="font-size:11px;font-weight:400;letter-spacing:1px">${pct}% CONFIDENCE</small>`;
+  const c = el('consensus-confidence'); if(c) c.textContent = `${pct}%`;
 }
 
-function showConsensusResult(approved, confidenceScore) {
-  const result = document.getElementById('consensus-result');
-  if (!result) return;
-  const pct = ((confidenceScore || 0) / 100).toFixed(1);
-  result.className = `consensus-result ${approved ? 'approved' : 'rejected'}`;
-  result.innerHTML = `${approved ? '✅ APPROVED' : '❌ REJECTED'}<br><span style="font-size:13px;font-weight:400">${pct}% confidence</span>`;
+// ─── Vote Bars ────────────────────────────────────────────────────────────────
+function renderVotes() {
+  const c = el('vote-bars'); if (!c) return;
+  const weights = { redteam:4, security:3, performance:2, style:1, human:2, coder:1 };
+  const order   = ['redteam','security','performance','style','human'];
+  c.innerHTML = order.filter(r => S.votes[r]).map(r => {
+    const v = S.votes[r];
+    const isOk = v.verdict === 'approve';
+    const pct = Math.min(100, v.confidence || 70);
+    const fillCls = r==='redteam' ? 'redteam' : r==='security' ? 'security' : (isOk ? 'approve' : 'reject');
+    return `<div class="vote-row">
+      <div class="vote-lbl">${ICONS[r]||'●'} ${r}</div>
+      <div class="vote-track"><div class="vote-fill ${fillCls}" style="width:${pct}%"></div></div>
+      <div class="vote-w">${weights[r]||1}×</div>
+    </div>`;
+  }).join('');
 }
 
-// ─── Render: Vote Bars ────────────────────────────────────────────────────────
-function renderVoteBars() {
-  const container = document.getElementById('vote-bars');
-  if (!container) return;
-
-  const roleOrder = ['redteam', 'security', 'performance', 'style', 'coder', 'human'];
-  const roleWeights = { redteam: 4, security: 3, performance: 2, style: 1, human: 2, coder: 1 };
-
-  container.innerHTML = roleOrder
-    .filter(role => state.votes[role])
-    .map(role => {
-      const vote = state.votes[role];
-      const isApprove = vote.verdict === 'approve';
-      const fillPct = Math.min(100, vote.confidence || 70);
-      const fillClass = role === 'redteam' ? 'redteam' : role === 'security' ? 'security' : (isApprove ? 'approve' : 'reject');
-      return `<div class="vote-bar-row">
-        <div class="vote-bar-label">${ROLE_ICONS[role] || '👤'} ${role}</div>
-        <div class="vote-bar-track">
-          <div class="vote-bar-fill ${fillClass}" style="width:${fillPct}%"></div>
-        </div>
-        <div class="vote-weight">${roleWeights[role] || 1}x</div>
-      </div>`;
-    }).join('');
-}
-
-// ─── Render: Debate Feed ──────────────────────────────────────────────────────
-function appendDebateMessage(msg) {
-  const feed = document.getElementById('debate-feed');
-  if (!feed) return;
-
-  const empty = feed.querySelector('.debate-empty');
-  if (empty) empty.remove();
+// ─── Debate / Terminal Feed ───────────────────────────────────────────────────
+function addMsg(msg) {
+  const feed = el('debate-feed'); if (!feed) return;
+  const empty = feed.querySelector('.terminal-empty'); if (empty) empty.remove();
 
   const role = msg.fromRole || 'gateway';
-  const isAttack = msg.isAttack || ['exploit_challenge', 'counter_attack'].includes(msg.type);
-  const confLevel = (msg.confidence || 70) >= 80 ? 'high' : (msg.confidence || 70) >= 50 ? 'medium' : 'low';
-  const typeLabel = {
-    exploit_challenge: '⚔ Attack',
-    counter_attack: '⚔ Counter',
-    defense: '🛡 Defense',
-    concession: '⚠ Conceded',
-    exploit_scan: '🔍 Scanning',
-    queue: '📦 Queued',
-    sync: '🔄 Synced',
-    chain_tx: '⛓ On-chain',
-    inft: '🎨 iNFT',
-    human: '👤 Human',
-    goal: '🎯 Goal',
-  }[msg.type] || msg.type || 'Info';
+  const conf = msg.conf !== undefined ? msg.conf : (msg.confidence || 70);
+  const lvl  = conf >= 80 ? 'high' : conf >= 50 ? 'medium' : 'low';
 
-  const time = new Date(msg.timestamp || Date.now()).toLocaleTimeString('en', { hour12: false });
-  const severityBadge = msg.severity ? ` <span style="color:${msg.severity === 'critical' ? '#EF4444' : msg.severity === 'high' ? '#F97316' : '#F59E0B'}">[${msg.severity.toUpperCase()}]</span>` : '';
+  const typeMap = {
+    exploit_challenge: '⚔ ATTACK', counter_attack: '⚔ COUNTER',
+    defense: '◈ DEFENSE',          concession: '⚠ CONCEDE',
+    exploit_scan: '◉ SCANNING',    queue: '▣ QUEUE',
+    sync: '↺ SYNC',                'chain-tx': '⛓ CHAIN',
+    inft: '◈ iNFT',                human: '◎ HUMAN',
+    goal: '▸ GOAL',                error: '✕ ERROR',
+  };
+  const label = typeMap[msg.type] || msg.type || 'INFO';
+  const time = new Date(msg.ts || Date.now()).toLocaleTimeString('en', { hour12: false });
+  const sev = msg.severity ? ` <span class="chip ${msg.severity==='critical'||msg.severity==='high'?'crit':'medium'}">${msg.severity.toUpperCase()}</span>` : '';
 
   const div = document.createElement('div');
-  div.className = `debate-message ${role}`;
+  div.className = `t-msg ${role}`;
   div.innerHTML = `
-    <div class="debate-header">
-      <span class="debate-role" style="color:${ROLE_COLORS[role] || '#888'}">${ROLE_ICONS[role] || '●'} ${role}</span>
-      <span class="debate-type">${typeLabel}${severityBadge}</span>
-      <span class="debate-time">${time}</span>
+    <div class="t-header">
+      <span class="t-role" style="color:${COLORS[role]||'#888'}">${label}${sev}</span>
+      <span class="t-role" style="color:${COLORS[role]||'#888'};font-size:9px;opacity:0.7"> ← ${role}</span>
+      <span class="t-time">${time}</span>
     </div>
-    <div class="debate-content">${escapeHtml(msg.content || '').slice(0, 300)}</div>
-    ${msg.confidence !== undefined ? `<div class="debate-confidence">Confidence: <span class="confidence-badge ${confLevel}">${msg.confidence}%</span></div>` : ''}
+    <div class="t-body">${esc(String(msg.content||'')).slice(0,400)}</div>
+    ${conf!==undefined ? `<div class="t-conf">conf: <span class="chip ${lvl}">${conf}%</span></div>` : ''}
   `;
   feed.appendChild(div);
   feed.scrollTop = feed.scrollHeight;
+  if (feed.children.length > 120) feed.children[0].remove();
 }
 
-// ─── Render: Agent Cards ──────────────────────────────────────────────────────
-function renderAgentCards() {
-  const container = document.getElementById('agent-cards');
-  if (!container) return;
-
-  const agents = Object.values(state.agents);
-  if (agents.length === 0) {
-    container.innerHTML = '<div style="color:var(--text-muted);padding:16px;text-align:center">No agents online yet...</div>';
+// ─── Agent Cards ──────────────────────────────────────────────────────────────
+function refreshAgents() {
+  const c = el('agent-cards'); if (!c) return;
+  const agents = Object.values(S.agents);
+  if (!agents.length) {
+    c.innerHTML = '<div style="color:var(--text-3);padding:20px;text-align:center;font-family:var(--mono);font-size:11px">Waiting for agents...</div>';
     return;
   }
-
-  container.innerHTML = agents.map(agent => {
-    const role = agent.role || 'gateway';
-    const online = agent.online !== false;
-    const busy = ['reviewing', 'debating', 'generating'].includes(agent.status);
-    const statusClass = online ? (busy ? 'busy' : 'online') : 'offline';
-
-    return `<div class="agent-card ${statusClass}">
-      <div class="agent-avatar ${role}">${ROLE_ICONS[role] || '🤖'}</div>
-      <div class="agent-info">
-        <div class="agent-name">${role}</div>
-        <div class="agent-peer">${(agent.peerId || 'unknown').slice(0, 16)}...</div>
-        <div class="agent-status">${agent.status || (online ? 'idle' : 'offline')}</div>
+  c.innerHTML = agents.map(a => {
+    const role = a.role || 'gateway';
+    const on   = a.online !== false;
+    const busy = ['reviewing','debating','generating'].includes(a.status);
+    const cls  = on ? (busy ? 'busy' : 'online') : 'offline';
+    const fill = HEX_FILLS[role] || '#7C3AED';
+    const dotColor = busy ? '#F59E0B' : on ? '#10B981' : '#374151';
+    const stateLabel = busy ? a.status : (on ? 'idle' : 'offline');
+    return `<div class="agent-card ${cls}">
+      <div class="agent-hex">
+        <svg class="hex-bg" viewBox="0 0 42 42">
+          <polygon points="21,2 38,10.5 38,31.5 21,40 4,31.5 4,10.5"
+            fill="${fill}22" stroke="${fill}" stroke-width="1.2" stroke-linejoin="round"/>
+          ${busy ? `<polygon points="21,2 38,10.5 38,31.5 21,40 4,31.5 4,10.5" fill="none" stroke="${fill}" stroke-width="1" stroke-linejoin="round" opacity="0.4"><animate attributeName="stroke-opacity" values="0.4;0.9;0.4" dur="1.5s" repeatCount="indefinite"/></polygon>` : ''}
+        </svg>
+        <span class="agent-hex-icon">${ICONS[role]||'●'}</span>
       </div>
-      <div class="agent-meta">
-        <div class="rep-score">${agent.reputationScore || 0}</div>
-        ${agent.teeVerified ? '<div class="tee-badge">TEE ✓</div>' : ''}
-        ${agent.evolutionCount ? `<div class="evolution-count">v${agent.evolutionCount}</div>` : ''}
+      <div class="agent-info">
+        <div class="agent-name" style="color:${fill}">${role}</div>
+        <div class="agent-peer">${(a.peerId||'').slice(0,20)}…</div>
+        <div class="agent-state">
+          <span class="state-dot" style="background:${dotColor};box-shadow:0 0 5px ${dotColor}"></span>
+          <span class="state-label">${stateLabel}</span>
+        </div>
+      </div>
+      <div class="agent-stats">
+        <div class="rep-score">${a.reputationScore||0}</div>
+        ${a.teeVerified ? '<div class="tee-chip">TEE ✓</div>' : ''}
+        ${a.evolutionCount ? `<div class="evo-label">v${a.evolutionCount}</div>` : ''}
       </div>
     </div>`;
   }).join('');
+
+  const cnt = agents.filter(a=>a.online!==false).length;
+  const ce = el('agents-online-count'); if(ce) ce.innerHTML = `<span class="badge badge-green">${cnt} online</span>`;
+  el('mesh-peer-count').innerHTML = `<span class="badge badge-violet">${agents.length} peers</span>`;
+  animStat('stat-agents', cnt);
 }
 
-function updateAgentCount() {
-  const el = document.getElementById('agents-online-count');
-  if (el) {
-    const count = Object.values(state.agents).filter(a => a.online !== false).length;
-    el.textContent = `${count} online`;
-  }
-  const meshEl = document.getElementById('mesh-peer-count');
-  if (meshEl) {
-    meshEl.textContent = `${Object.keys(state.agents).length} peers`;
-  }
-}
+function refreshAgents_noop() {}
 
 // ─── Mesh Canvas ──────────────────────────────────────────────────────────────
-let meshCtx = null;
-let meshNodes = [];
-let meshEdges = [];
-let meshAnimFrame = null;
+let mCtx, mNodes = [], mEdges = [], mPackets = [];
 
-function initMeshCanvas() {
-  const canvas = document.getElementById('mesh-canvas');
-  if (!canvas) return;
-  meshCtx = canvas.getContext('2d');
-  resizeMeshCanvas();
-  window.addEventListener('resize', resizeMeshCanvas);
-  renderMesh();
-  requestAnimationFrame(meshAnimate);
+function initMesh() {
+  const cv = el('mesh-canvas'); if (!cv) return;
+  mCtx = cv.getContext('2d');
+  sizeMesh();
+  window.addEventListener('resize', sizeMesh);
+  requestAnimationFrame(animMesh);
 }
 
-function resizeMeshCanvas() {
-  const canvas = document.getElementById('mesh-canvas');
-  if (!canvas) return;
-  const container = canvas.parentElement;
-  canvas.width = container.clientWidth;
-  canvas.height = container.clientHeight;
+function sizeMesh() {
+  const cv = el('mesh-canvas'); if (!cv) return;
+  const p = cv.parentElement;
+  cv.width  = p.clientWidth;
+  cv.height = p.clientHeight;
 }
 
-function renderMesh() {
-  const canvas = document.getElementById('mesh-canvas');
-  if (!canvas || !meshCtx) return;
+function refreshMesh() {
+  const cv = el('mesh-canvas'); if (!cv || !mCtx) return;
+  const agents = Object.values(S.agents);
+  const W = cv.width, H = cv.height;
+  const cx = W/2, cy = H/2;
+  const r  = Math.min(W, H) * 0.36;
 
-  const agents = Object.values(state.agents);
-  const W = canvas.width, H = canvas.height;
-  const cx = W / 2, cy = H / 2;
-  const r = Math.min(W, H) * 0.35;
-
-  // Position agents in a circle
-  meshNodes = agents.map((agent, i) => {
-    const angle = (i / agents.length) * Math.PI * 2 - Math.PI / 2;
+  mNodes = agents.map((a, i) => {
+    const angle = (i / Math.max(agents.length,1)) * Math.PI * 2 - Math.PI/2;
     return {
-      id: agent.peerId,
-      role: agent.role || 'gateway',
+      id: a.peerId, role: a.role||'gateway',
       x: cx + Math.cos(angle) * r,
       y: cy + Math.sin(angle) * r,
-      online: agent.online !== false,
-      busy: ['reviewing', 'debating', 'generating'].includes(agent.status),
+      on: a.online !== false,
+      busy: ['reviewing','debating','generating'].includes(a.status),
+      t: 0,
     };
   });
-
-  drawMesh();
 }
 
-function drawMesh() {
-  const canvas = document.getElementById('mesh-canvas');
-  if (!canvas || !meshCtx) return;
-  const ctx = meshCtx;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+function flashEdge(fromId, toId, color) {
+  const a = mNodes.find(n => n.id===fromId || n.role===fromId);
+  const b = mNodes.find(n => n.id===toId   || n.role===toId);
+  if (!a || !b) return;
+  mEdges.push({ x1:a.x,y1:a.y, x2:b.x,y2:b.y, color, born:Date.now() });
+  // Launch a data packet
+  mPackets.push({ x:a.x,y:a.y, tx:b.x,ty:b.y, x0:a.x,y0:a.y, color, born:Date.now(), dur:1000+Math.random()*500 });
+}
 
-  // Draw edges
-  for (let i = 0; i < meshNodes.length; i++) {
-    for (let j = i + 1; j < meshNodes.length; j++) {
-      const a = meshNodes[i], b = meshNodes[j];
-      if (!a.online || !b.online) continue;
+function meshGossip(topic) {
+  const color = topic?.includes('critical') ? '#EF4444' : '#7C3AED';
+  for (let i=0; i<mNodes.length-1; i++) {
+    const a = mNodes[i], b = mNodes[(i+1)%mNodes.length];
+    mEdges.push({ x1:a.x,y1:a.y,x2:b.x,y2:b.y,color,born:Date.now() });
+  }
+}
+
+function animMesh() {
+  requestAnimationFrame(animMesh);
+  const cv = el('mesh-canvas'); if(!cv||!mCtx) return;
+  const ctx = mCtx;
+  const now = Date.now();
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  // Draw static edges (dark mesh lines)
+  for (let i=0; i<mNodes.length; i++) {
+    for (let j=i+1; j<mNodes.length; j++) {
+      const a=mNodes[i], b=mNodes[j];
+      if (!a.on || !b.on) continue;
       ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = 'rgba(42,42,53,0.8)';
+      ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+      ctx.strokeStyle = 'rgba(100,80,200,0.08)';
       ctx.lineWidth = 1;
       ctx.stroke();
-      // Lock icon on line midpoint (encryption indicator)
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      ctx.font = '8px sans-serif';
-      ctx.fillStyle = 'rgba(139,92,246,0.4)';
-      ctx.fillText('🔒', mx - 4, my + 3);
     }
   }
 
-  // Draw animated edges
-  for (const edge of meshEdges) {
-    if (Date.now() - edge.time > 2000) continue;
-    const alpha = 1 - (Date.now() - edge.time) / 2000;
+  // Draw animated flash edges
+  mEdges = mEdges.filter(e => now-e.born < 1800);
+  for (const e of mEdges) {
+    const alpha = 1 - (now-e.born)/1800;
     ctx.beginPath();
-    ctx.moveTo(edge.x1, edge.y1);
-    ctx.lineTo(edge.x2, edge.y2);
-    ctx.strokeStyle = edge.color + Math.round(alpha * 255).toString(16).padStart(2, '0');
-    ctx.lineWidth = 2;
+    ctx.moveTo(e.x1,e.y1); ctx.lineTo(e.x2,e.y2);
+    ctx.strokeStyle = e.color + hex2(Math.round(alpha*180));
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = e.color;
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // Draw traveling data packets
+  mPackets = mPackets.filter(p => now-p.born < p.dur);
+  for (const p of mPackets) {
+    const t = (now-p.born)/p.dur;
+    const x = p.x0 + (p.tx-p.x0)*t;
+    const y = p.y0 + (p.ty-p.y0)*t;
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI*2);
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Trail
+    ctx.beginPath();
+    const tx0 = p.x0 + (p.tx-p.x0)*Math.max(0,t-0.15);
+    const ty0 = p.y0 + (p.ty-p.y0)*Math.max(0,t-0.15);
+    ctx.moveTo(tx0,ty0); ctx.lineTo(x,y);
+    ctx.strokeStyle = p.color + '44';
+    ctx.lineWidth = 1.5;
     ctx.stroke();
   }
 
   // Draw nodes
-  for (const node of meshNodes) {
-    const color = node.role === 'redteam' ? '#EF4444'
-      : ROLE_COLORS[node.role] || '#8B5CF6';
+  for (const n of mNodes) {
+    const col = COLORS[n.role] || '#7C3AED';
+    const R = 18;
 
-    // Glow for busy nodes
-    if (node.busy) {
+    // Outer glow for busy/active
+    if (n.busy || n.on) {
+      const grd = ctx.createRadialGradient(n.x,n.y,R,n.x,n.y,R*2.2);
+      grd.addColorStop(0, col + (n.busy ? '44' : '22'));
+      grd.addColorStop(1, col + '00');
       ctx.beginPath();
-      ctx.arc(node.x, node.y, 22, 0, Math.PI * 2);
-      ctx.fillStyle = color + '22';
+      ctx.arc(n.x,n.y,R*2.2,0,Math.PI*2);
+      ctx.fillStyle = grd;
       ctx.fill();
     }
 
-    // Node circle
+    // Hex shape
     ctx.beginPath();
-    ctx.arc(node.x, node.y, 14, 0, Math.PI * 2);
-    ctx.fillStyle = node.online ? color + '33' : '#374151';
+    for (let k=0; k<6; k++) {
+      const a = (k*Math.PI/3) - Math.PI/6;
+      k===0 ? ctx.moveTo(n.x+R*Math.cos(a),n.y+R*Math.sin(a))
+             : ctx.lineTo(n.x+R*Math.cos(a),n.y+R*Math.sin(a));
+    }
+    ctx.closePath();
+    ctx.fillStyle = n.on ? col+'22' : '#1a1a2e';
     ctx.fill();
-    ctx.strokeStyle = node.online ? color : '#4B5563';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = n.on ? col : '#2a2a40';
+    ctx.lineWidth = n.busy ? 2 : 1.5;
+    if (n.busy) { ctx.shadowColor = col; ctx.shadowBlur = 12; }
     ctx.stroke();
+    ctx.shadowBlur = 0;
 
     // Icon
-    ctx.font = '14px sans-serif';
+    ctx.font = '13px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(ROLE_ICONS[node.role] || '●', node.x, node.y);
+    ctx.fillStyle = n.on ? '#fff' : '#44445a';
+    ctx.fillText(ICONS[n.role]||'●', n.x, n.y);
 
     // Label
-    ctx.font = '10px -apple-system, sans-serif';
-    ctx.fillStyle = node.online ? '#f0f0f2' : '#6B7280';
-    ctx.fillText(node.role, node.x, node.y + 22);
-  }
-
-  // Prune old edges
-  meshEdges = meshEdges.filter(e => Date.now() - e.time < 2000);
-}
-
-function meshAnimate() {
-  drawMesh();
-  requestAnimationFrame(meshAnimate);
-}
-
-function renderMeshEdge(fromId, toId, color) {
-  const from = meshNodes.find(n => n.id === fromId || n.role === fromId);
-  const to = meshNodes.find(n => n.id === toId || n.role === toId);
-  if (from && to) {
-    meshEdges.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y, color: color || '#8B5CF6', time: Date.now() });
+    ctx.font = '9px "JetBrains Mono",monospace';
+    ctx.fillStyle = n.on ? col : '#44445a';
+    ctx.fillText(n.role.toUpperCase(), n.x, n.y + R + 9);
   }
 }
 
-function animateMeshGossip(topic) {
-  // Briefly animate all connections to show gossip propagation
-  for (let i = 0; i < meshNodes.length - 1; i++) {
-    const color = topic?.includes('critical') ? '#EF4444' : '#8B5CF6';
-    meshEdges.push({
-      x1: meshNodes[i].x, y1: meshNodes[i].y,
-      x2: meshNodes[(i + 1) % meshNodes.length].x,
-      y2: meshNodes[(i + 1) % meshNodes.length].y,
-      color, time: Date.now(),
+function hex2(v) { return Math.max(0,Math.min(255,v)).toString(16).padStart(2,'0'); }
+
+// ─── Particle Background Canvas ───────────────────────────────────────────────
+let bgCtx, bgParticles = [];
+
+function initBg() {
+  const cv = el('bg-canvas'); if (!cv) return;
+  bgCtx = cv.getContext('2d');
+  sizeBg();
+  window.addEventListener('resize', sizeBg);
+
+  // Spawn particles
+  for (let i=0; i<80; i++) {
+    bgParticles.push({
+      x: Math.random() * cv.width,
+      y: Math.random() * cv.height,
+      r: 0.8 + Math.random() * 1.4,
+      vx: (Math.random()-0.5)*0.25,
+      vy: (Math.random()-0.5)*0.25,
+      a: Math.random(),
     });
   }
+  requestAnimationFrame(animBg);
+}
+
+function sizeBg() {
+  const cv = el('bg-canvas'); if (!cv) return;
+  cv.width  = window.innerWidth;
+  cv.height = window.innerHeight;
+}
+
+function animBg() {
+  requestAnimationFrame(animBg);
+  const cv = el('bg-canvas'); if (!cv||!bgCtx) return;
+  const ctx = bgCtx;
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0,0,W,H);
+
+  // Update & draw particles
+  for (const p of bgParticles) {
+    p.x += p.vx; p.y += p.vy;
+    if (p.x < 0) p.x = W; if (p.x > W) p.x = 0;
+    if (p.y < 0) p.y = H; if (p.y > H) p.y = 0;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(124,58,237,${0.3+p.a*0.3})`;
+    ctx.fill();
+  }
+
+  // Draw connections between nearby particles
+  for (let i=0; i<bgParticles.length; i++) {
+    for (let j=i+1; j<bgParticles.length; j++) {
+      const a=bgParticles[i], b=bgParticles[j];
+      const dx=a.x-b.x, dy=a.y-b.y, dist=Math.sqrt(dx*dx+dy*dy);
+      if (dist < 120) {
+        ctx.beginPath();
+        ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+        ctx.strokeStyle = `rgba(124,58,237,${(1-dist/120)*0.08})`;
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+// ─── TEE Panel ────────────────────────────────────────────────────────────────
+async function loadTEEProviders() {
+  try {
+    const res = await fetch('/api/tee-providers');
+    const data = await res.json();
+    renderTEEProviders(data.providers || []);
+  } catch {}
+}
+
+async function refreshTEEAttestations() {
+  try {
+    const res = await fetch('/api/tee-attestations');
+    const data = await res.json();
+    S.tee = { ...S.tee, ...data.summary, providers: data.providers||[], chats: data.chats||[] };
+    syncTEE();
+  } catch {}
+}
+
+function syncTEE() {
+  const t = S.tee;
+  setT('tee-total', t.totalInferences||t.total||0);
+  setT('tee-ok',    t.verified||0);
+  setT('tee-fail',  t.unverified||0);
+  el('tee-verified-badge').innerHTML = `<span class="badge badge-teal">${t.verified||0} verified</span>`;
+
+  // Render recent chats
+  const cl = el('tee-chat-list');
+  if (cl && t.chats?.length) {
+    cl.innerHTML = t.chats.slice(-8).reverse().map(c => {
+      const dotCls = c.responseVerified===true?'ok':c.responseVerified===false?'no':'unk';
+      const time = new Date(c.timestamp).toLocaleTimeString('en',{hour12:false});
+      return `<div class="tee-chat-item">
+        <span class="tee-chat-dot ${dotCls}"></span>
+        <span class="tee-chat-id">${c.chatId}</span>
+        <span class="tee-chat-time">${time}</span>
+      </div>`;
+    }).join('');
+  }
+
+  if (t.providers?.length) renderTEEProviders(t.providers);
+}
+
+function renderTEEProviders(providers) {
+  const c = el('tee-provider-list'); if (!c) return;
+  if (!providers.length) { c.innerHTML = '<div class="tee-empty-msg">No providers registered yet</div>'; return; }
+  c.innerHTML = providers.map(p => {
+    const vCls = p.serviceVerified===true?'ok':p.serviceVerified===false?'no':'unk';
+    const vLbl = p.serviceVerified===true?'TDX ✓':p.serviceVerified===false?'FAILED':'UNVERIFIED';
+    const addr = p.provider||p.providerAddress||'';
+    return `<div class="tee-provider-item">
+      <div class="tee-provider-icon">🔒</div>
+      <div class="tee-provider-info">
+        <div class="tee-provider-model">${p.model||'Unknown model'}</div>
+        <div class="tee-provider-addr">${addr.slice(0,20)}…</div>
+        <div class="tee-provider-type">${p.verifiability||p.serviceType||'—'} · ${p.inputPrice?p.inputPrice+' /tok':''}</div>
+      </div>
+      <div class="tee-verify-badge ${vCls}">${vLbl}</div>
+    </div>`;
+  }).join('');
 }
 
 // ─── QR Code ──────────────────────────────────────────────────────────────────
-async function loadQRCode(url) {
+async function loadQR() {
   try {
-    const res = await fetch('/api/qrcode');
-    const data = await res.json();
-    const img = document.getElementById('qr-code');
-    const urlEl = document.getElementById('qr-url');
-    if (img && data.qr) img.src = data.qr;
-    if (urlEl && (data.url || url)) urlEl.textContent = data.url || url;
-  } catch (e) { console.warn('QR code load failed', e); }
+    const d = await (await fetch('/api/qrcode')).json();
+    const img = el('qr-code'), url = el('qr-url');
+    if (img && d.qr) img.src = d.qr;
+    if (url && d.url) url.textContent = d.url;
+  } catch {}
 }
 
 // ─── Controls ─────────────────────────────────────────────────────────────────
 async function injectGoal() {
-  const input = document.getElementById('goal-input');
-  const goal = input?.value?.trim();
-  if (!goal) return;
+  const inp = el('goal-input');
+  const goal = inp?.value?.trim(); if (!goal) return;
   try {
-    await fetch('/api/inject-goal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ goal, source: 'dashboard' }),
-    });
-    if (input) input.value = '';
-  } catch (e) { alert('Failed to inject goal: ' + e.message); }
+    await post('/api/inject-goal', { goal, source: 'dashboard' });
+    inp.value = '';
+  } catch(e) { alert('Failed: ' + e.message); }
 }
 
 async function triggerReview() {
-  const input = document.getElementById('pr-url-input');
-  const url = input?.value?.trim();
-  if (!url) return;
+  const inp = el('pr-url-input');
+  const url = inp?.value?.trim(); if (!url) return;
   try {
-    await fetch('/api/trigger-review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prUrl: url }),
-    });
-    if (input) input.value = '';
-  } catch (e) { alert('Failed to trigger review: ' + e.message); }
+    await post('/api/trigger-review', { prUrl: url });
+    inp.value = '';
+  } catch(e) { alert('Failed: ' + e.message); }
 }
 
 async function castVote(verdict) {
   try {
-    await fetch('/api/vote', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ verdict, reason: 'Judge advisory vote' }),
-    });
-    state.votes['human'] = { verdict, confidence: 80, agentRole: 'human' };
-    renderVoteBars();
-  } catch (e) { alert('Failed to cast vote: ' + e.message); }
+    await post('/api/vote', { verdict, reason: 'Judge advisory vote' });
+    S.votes['human'] = { verdict, confidence: 80, agentRole: 'human' };
+    renderVotes();
+  } catch(e) { alert('Failed: ' + e.message); }
 }
 
 async function toggleOffline() {
-  const newOffline = !state.offlineMode;
   try {
-    await fetch('/api/offline-mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: newOffline }),
-    });
-    state.offlineMode = newOffline;
-    updateOfflineBanner();
-  } catch (e) { alert('Failed to toggle offline: ' + e.message); }
+    const newOff = !S.offlineMode;
+    await post('/api/offline-mode', { enabled: newOff });
+    S.offlineMode = newOff; syncOffline();
+  } catch(e) { alert('Failed: ' + e.message); }
 }
 
-// ─── Tab Navigation ───────────────────────────────────────────────────────────
-function switchTab(tabName) {
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tabName);
-  });
-  document.querySelectorAll('.panel').forEach(panel => {
-    panel.classList.toggle('active', panel.dataset.panel === tabName);
-  });
+// ─── Tab Nav ──────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab===name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel===name));
+  if (name === 'mesh') { sizeMesh(); refreshMesh(); }
+  if (name === 'tee')  { refreshTEEAttestations(); }
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
-function showTxToast(txHash, action) {
-  const toast = document.createElement('div');
-  toast.className = 'tx-toast';
-  toast.innerHTML = `⛓ ${action || 'TX'}: <code>${txHash?.slice(0, 18) || ''}...</code>`;
-  document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 5000);
+function txToast(hash, action) {
+  const t = document.createElement('div');
+  t.className = 'tx-toast';
+  t.innerHTML = `⛓ ${action||'TX'}: <code style="color:var(--cyan-l)">${hash?.slice(0,22)||''}…</code>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function escapeHtml(str) {
-  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
-  return str.replace(/[&<>"']/g, m => map[m]);
+const el  = id => document.getElementById(id);
+const setT = (id, v) => { const e=el(id); if(e) e.textContent=v; };
+const post = (url, body) => fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+function esc(s) {
+  return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 }
 
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && document.activeElement?.id === 'goal-input') {
-    injectGoal();
-  }
+  if (e.key==='Enter' && document.activeElement?.id==='goal-input') injectGoal();
+  if (e.key==='Enter' && document.activeElement?.id==='pr-url-input') triggerReview();
 });
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  renderPipelinePhases();
-  initMeshCanvas();
-  renderAgentCards();
-  loadQRCode();
+  initBg();
+  renderPhases();
+  initMesh();
+  refreshAgents();
+  loadQR();
+  loadTEEProviders();
 
-  // Mobile: activate first tab
+  // Poll TEE attestations every 15s
+  setInterval(refreshTEEAttestations, 15000);
+
   if (window.innerWidth < 640) switchTab('mesh');
+
+  // Add stat-flash keyframe dynamically
+  const style = document.createElement('style');
+  style.textContent = `@keyframes stat-flash{0%{transform:scale(1)}50%{transform:scale(1.25);opacity:0.7}100%{transform:scale(1)}} .stat-flash{animation:stat-flash 0.4s ease;}`;
+  document.head.appendChild(style);
 });
