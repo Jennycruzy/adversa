@@ -139,15 +139,42 @@ app.post('/api/vote', (req, res) => {
   res.json({ success: true });
 });
 
-// Trigger manual review by PR URL
-app.post('/api/trigger-review', (req, res) => {
+// Trigger manual review by PR URL — parses github.com/owner/repo/pull/N
+let triggerReviewHandler: ((owner: string, repo: string, prNumber: number) => Promise<void>) | null = null;
+
+export function registerTriggerReviewHandler(
+  fn: (owner: string, repo: string, prNumber: number) => Promise<void>
+): void {
+  triggerReviewHandler = fn;
+}
+
+app.post('/api/trigger-review', async (req, res) => {
   const { prUrl } = req.body as { prUrl?: string };
   if (!prUrl) {
     res.status(400).json({ error: 'prUrl is required' });
     return;
   }
-  io.emit('manual-review-triggered', { prUrl, timestamp: Date.now() });
-  res.json({ success: true, prUrl });
+
+  // Parse: github.com/owner/repo/pull/42  or  https://github.com/owner/repo/pull/42
+  const match = prUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+  if (!match) {
+    res.status(400).json({ error: 'Invalid GitHub PR URL — expected github.com/owner/repo/pull/N' });
+    return;
+  }
+
+  const [, owner, repo, prNum] = match;
+  const prNumber = parseInt(prNum, 10);
+
+  io.emit('manual-review-triggered', { prUrl, owner, repo, prNumber, timestamp: Date.now() });
+
+  if (triggerReviewHandler) {
+    triggerReviewHandler(owner, repo, prNumber).catch(err =>
+      logger.error('Manual review trigger error', { err })
+    );
+    res.json({ success: true, owner, repo, prNumber });
+  } else {
+    res.json({ success: true, prUrl, note: 'Gateway handler not registered yet' });
+  }
 });
 
 // Offline mode toggle (demo only)

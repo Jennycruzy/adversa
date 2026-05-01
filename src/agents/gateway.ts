@@ -8,7 +8,7 @@ import { GitHubClient } from '../integrations/github.js';
 import { OfflineQueue } from '../offline/queue.js';
 import { SyncEngine } from '../offline/sync.js';
 import { ConnectivityDetector } from '../offline/detector.js';
-import { startDashboardServer, emitMeshEvent, registerGoalHandler, registerTeeProviderLister } from '../dashboard/server.js';
+import { startDashboardServer, emitMeshEvent, registerGoalHandler, registerTeeProviderLister, registerTriggerReviewHandler } from '../dashboard/server.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
@@ -39,6 +39,11 @@ export class GatewayAgent extends BaseAgent {
 
     // Register TEE provider lister so the dashboard can show available TeeML services
     registerTeeProviderLister(() => this.ogCompute.listTeeProviders());
+
+    // Wire the dashboard "Review" button to the actual pipeline
+    registerTriggerReviewHandler((owner, repo, prNumber) =>
+      this.processPR(owner, repo, prNumber)
+    );
 
     // Register goal injection handler for the dashboard API
     registerGoalHandler(async (goal, source) => {
