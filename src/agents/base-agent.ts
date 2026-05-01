@@ -18,7 +18,7 @@ export abstract class BaseAgent {
   protected inftTokenId?: number;
 
   constructor(protected readonly role: AgentRole) {
-    this.axl = new AXLClient(config.axl.nodePort);
+    this.axl = new AXLClient(config.axl.nodePort, config.axl.nodeHost);
     this.gossip = new GossipSub(this.axl);
     this.topology = new TopologyManager(this.axl);
     this.ogCompute = new OGComputeClient();

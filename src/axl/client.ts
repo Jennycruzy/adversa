@@ -23,8 +23,8 @@ export class AXLClient {
   public selfPeerId: string = '';
   private pollInterval: NodeJS.Timeout | null = null;
 
-  constructor(port: number = 9002) {
-    this.baseUrl = `http://localhost:${port}`;
+  constructor(port: number = 9002, host: string = 'localhost') {
+    this.baseUrl = `http://${host}:${port}`;
   }
 
   async initialize(): Promise<string> {

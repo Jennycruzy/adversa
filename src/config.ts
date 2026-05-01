@@ -6,6 +6,7 @@ const AgentRoleSchema = z.enum(['gateway', 'security', 'performance', 'style', '
 const ConfigSchema = z.object({
   axl: z.object({
     nodePort: z.number().default(9002),
+    nodeHost: z.string().default('localhost'),
     privateKeyPath: z.string().default('./keys/agent-private.pem'),
     configPath: z.string().default('./config/node-config.json'),
   }),
@@ -55,6 +56,7 @@ function loadConfig(): Config {
   const raw = {
     axl: {
       nodePort: parseInt(process.env.AXL_NODE_PORT ?? '9002'),
+      nodeHost: process.env.AXL_NODE_HOST ?? 'localhost',
       privateKeyPath: process.env.AXL_PRIVATE_KEY_PATH ?? './keys/agent-private.pem',
       configPath: process.env.AXL_CONFIG_PATH ?? './config/node-config.json',
     },
