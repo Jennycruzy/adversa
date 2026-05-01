@@ -7,6 +7,7 @@ import os from 'os';
 import QRCode from 'qrcode';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
+import { globalTEERegistry } from '../integrations/og-tee-attestation.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -57,6 +58,33 @@ app.get('/api/status', (_req, res) => {
     port: config.dashboard.port,
     timestamp: Date.now(),
   });
+});
+
+// ─── TEE Attestation endpoints ───────────────────────────────────────────────
+
+// Returns all TEE proof data gathered since process start:
+//   providers  — one entry per 0G Compute provider, with RA verification status
+//   chats      — one entry per inference call, with per-response verification status
+//   summary    — aggregated counts
+// The frontend uses this to show the real-time TEE verification status panel.
+app.get('/api/tee-attestations', (_req, res) => {
+  res.json(globalTEERegistry.toJSON());
+});
+
+// Expose the OGComputeClient provider list so the dashboard can show
+// available TeeML services. Registered by gateway at startup.
+let listTeeProvidersHandler: (() => Promise<unknown[]>) | null = null;
+export function registerTeeProviderLister(fn: () => Promise<unknown[]>): void {
+  listTeeProvidersHandler = fn;
+}
+
+app.get('/api/tee-providers', async (_req, res) => {
+  try {
+    const providers = listTeeProvidersHandler ? await listTeeProvidersHandler() : [];
+    res.json({ providers });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // Goal injection endpoint — broadcasts via AXL GossipSub

@@ -8,7 +8,7 @@ import { GitHubClient } from '../integrations/github.js';
 import { OfflineQueue } from '../offline/queue.js';
 import { SyncEngine } from '../offline/sync.js';
 import { ConnectivityDetector } from '../offline/detector.js';
-import { startDashboardServer, emitMeshEvent, registerGoalHandler } from '../dashboard/server.js';
+import { startDashboardServer, emitMeshEvent, registerGoalHandler, registerTeeProviderLister } from '../dashboard/server.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
@@ -36,6 +36,9 @@ export class GatewayAgent extends BaseAgent {
   protected async onStart(): Promise<void> {
     // Start dashboard server
     await startDashboardServer();
+
+    // Register TEE provider lister so the dashboard can show available TeeML services
+    registerTeeProviderLister(() => this.ogCompute.listTeeProviders());
 
     // Register goal injection handler for the dashboard API
     registerGoalHandler(async (goal, source) => {

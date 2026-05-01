@@ -1,7 +1,7 @@
 import { AXLClient } from '../axl/client.js';
 import { GossipSub, GOSSIP_TOPICS } from '../axl/gossipsub.js';
 import { TopologyManager } from '../axl/topology.js';
-import { OGComputeClient } from '../integrations/og-compute.js';
+import { OGComputeClient, InferenceResult } from '../integrations/og-compute.js';
 import { config, AgentRole } from '../config.js';
 import { MCPServiceDef, HeartbeatPayload, AgentCard } from '../types/agent.js';
 import { logger } from '../utils/logger.js';
@@ -68,11 +68,19 @@ export abstract class BaseAgent {
   protected async callLLM(
     userMessage: string,
     systemOverride?: string
-  ): Promise<{ response: string; teeProof?: string; isValid: boolean }> {
+  ): Promise<InferenceResult> {
     const systemPrompt = systemOverride ?? this.getSystemPrompt();
     this.setStatus('reviewing');
     try {
-      return await this.ogCompute.inference(systemPrompt, userMessage);
+      const result = await this.ogCompute.inference(systemPrompt, userMessage);
+      if (!result.isValid) {
+        logger.warn('TEE inference not verified', {
+          role: this.role,
+          model: result.model,
+          chatId: result.chatId,
+        });
+      }
+      return result;
     } finally {
       this.setStatus('idle');
     }

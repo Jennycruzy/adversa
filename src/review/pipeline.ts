@@ -7,6 +7,7 @@ import { OGStorageClient } from '../integrations/og-storage.js';
 import { OGChainClient } from '../integrations/og-chain.js';
 import { KeeperHubClient } from '../integrations/keeperhub.js';
 import { SyncEngine } from '../offline/sync.js';
+import { globalTEERegistry } from '../integrations/og-tee-attestation.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { emitMeshEvent } from '../dashboard/server.js';
@@ -268,12 +269,21 @@ export class ReviewPipeline {
     // ─── Phase 6: Action + on-chain recording ─────────────────────────────────
     emitMeshEvent('pipeline-phase', { phase: 6, name: 'action', approved: consensusResult.approved, prHash });
 
+    // Collect all TEE attestation data gathered during this review
+    const teeAttestation = globalTEERegistry.toJSON();
+    emitMeshEvent('tee-attestation', {
+      prHash,
+      ...globalTEERegistry.summary(),
+      providers: (teeAttestation as { providers: unknown[] }).providers,
+    });
+
     const storageUpload = await this.storage.uploadReviewFindings({
       prHash,
       findings: allFindings,
       votes,
       consensus: consensusResult,
       teeProofs: consensusResult.teeProofIds,
+      teeAttestation,
     });
     consensusResult.storageRoot = storageUpload.rootHash;
 

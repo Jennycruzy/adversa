@@ -27,6 +27,10 @@ const ConfigSchema = z.object({
     reputationAddress: z.string().optional(),
     inftAddress: z.string().optional(),
     deployerPrivateKey: z.string().optional(),
+    // Ledger management (A0GI units)
+    ledgerInitialBalance: z.number().optional(),
+    ledgerDepositAmount: z.number().optional(),
+    ledgerLowBalanceThreshold: z.number().optional(),
   }),
   keeperhub: z.object({
     apiKey: z.string().optional(),
@@ -77,6 +81,15 @@ function loadConfig(): Config {
       reputationAddress: process.env.ADVERSA_REPUTATION_ADDRESS,
       inftAddress: process.env.ADVERSA_INFT_ADDRESS,
       deployerPrivateKey: process.env.DEPLOYER_PRIVATE_KEY,
+      ledgerInitialBalance: process.env.OG_LEDGER_INITIAL_BALANCE
+        ? parseFloat(process.env.OG_LEDGER_INITIAL_BALANCE)
+        : undefined,
+      ledgerDepositAmount: process.env.OG_LEDGER_DEPOSIT_AMOUNT
+        ? parseFloat(process.env.OG_LEDGER_DEPOSIT_AMOUNT)
+        : undefined,
+      ledgerLowBalanceThreshold: process.env.OG_LEDGER_LOW_BALANCE_THRESHOLD
+        ? parseFloat(process.env.OG_LEDGER_LOW_BALANCE_THRESHOLD)
+        : undefined,
     },
     keeperhub: {
       apiKey: process.env.KEEPERHUB_API_KEY,

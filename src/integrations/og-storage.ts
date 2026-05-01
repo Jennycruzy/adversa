@@ -105,6 +105,7 @@ export class OGStorageClient {
     votes: unknown[];
     consensus: unknown;
     teeProofs: string[];
+    teeAttestation?: unknown;
   }): Promise<StorageUploadResult> {
     return this.upload({
       type: 'review-findings',
