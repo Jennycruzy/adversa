@@ -161,6 +161,10 @@ app.post('/api/offline-mode', (req, res) => {
 let offlineModeEnabled = false;
 export function isOfflineModeEnabled(): boolean { return offlineModeEnabled; }
 
+// ─── Agent state cache (for replay on new connections) ───────────────────────
+
+const agentStateCache = new Map<string, Record<string, unknown>>();
+
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 
 io.on('connection', socket => {
@@ -174,6 +178,13 @@ io.on('connection', socket => {
     offlineMode: offlineModeEnabled,
   });
 
+  // Replay all currently known agents so the client sees them immediately
+  for (const agent of agentStateCache.values()) {
+    if (agent.online) {
+      socket.emit('agent-online', { ...agent, timestamp: Date.now() });
+    }
+  }
+
   socket.on('disconnect', () => {
     logger.debug('Dashboard client disconnected', { id: socket.id });
   });
@@ -182,7 +193,29 @@ io.on('connection', socket => {
 // ─── Event emission helpers ───────────────────────────────────────────────────
 
 export function emitMeshEvent(event: string, data: Record<string, unknown>): void {
-  io.emit(event, { ...data, timestamp: Date.now() });
+  const payload = { ...data, timestamp: Date.now() };
+
+  // Keep agent state cache up to date for new-client replay
+  if (event === 'agent-online') {
+    const peerId = data.peerId as string;
+    if (peerId) {
+      agentStateCache.set(peerId, { ...agentStateCache.get(peerId), ...data, online: true });
+    }
+  } else if (event === 'agent-offline') {
+    const peerId = data.peerId as string;
+    if (peerId) {
+      const existing = agentStateCache.get(peerId);
+      if (existing) agentStateCache.set(peerId, { ...existing, online: false });
+    }
+  } else if (event === 'agent-status') {
+    const peerId = data.peerId as string;
+    if (peerId && agentStateCache.has(peerId)) {
+      const existing = agentStateCache.get(peerId)!;
+      agentStateCache.set(peerId, { ...existing, status: data.status });
+    }
+  }
+
+  io.emit(event, payload);
 }
 
 // ─── Server start ─────────────────────────────────────────────────────────────
