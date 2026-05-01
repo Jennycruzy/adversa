@@ -326,17 +326,13 @@ export class ReviewPipeline {
       emitMeshEvent('github-action', { action: 'rejected', prNumber: pr.number, prHash });
     }
 
-    // Record on-chain via KeeperHub
+    // Record directly on 0G Chain via AdversaRegistry contract
     if (config.og.registryAddress) {
-      const kResult = await this.syncEngine.executeOrQueue('keeperhub-workflow', {
-        consensus: consensusResult as unknown as Record<string, unknown>,
-        storageRoot: storageUpload.rootHash,
-        registryAddress: config.og.registryAddress,
-      });
-
-      if (kResult === 'executed') {
-        txHash = `0x${crypto.randomUUID().replace(/-/g, '')}`; // Will be real tx hash from KeeperHub
-        emitMeshEvent('chain-tx', { action: 'review-recorded', txHash, prHash, approved: consensusResult.approved });
+      const realTxHash = await this.chain.recordReview(consensusResult, storageUpload.rootHash);
+      if (realTxHash) {
+        txHash = realTxHash;
+        emitMeshEvent('chain-tx', { action: 'review-recorded', txHash: realTxHash, prHash, approved: consensusResult.approved });
+        logger.info('Review recorded on 0G Chain', { txHash: realTxHash, prHash: prHash.slice(0, 12) });
       }
     }
 

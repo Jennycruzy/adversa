@@ -43,8 +43,15 @@ export class OGComputeClient {
       this.wallet = new ethers.Wallet(config.og.privateKey, this.provider);
 
       // Dynamically import the 0G broker SDK
+      // Use zgTestnetDev contract addresses — the SDK defaults are wrong for this testnet
       const { createZGComputeNetworkBroker } = await import('@0glabs/0g-serving-broker');
-      this.broker = await createZGComputeNetworkBroker(this.wallet as ethers.Wallet);
+      const LEDGER_CA = '0x815B93ab4Ba4BDF530dbF1552649a3c534F8BbF7';
+      const INFERENCE_CA = '0x41bD7Ac5c19000A974D5c192bcd5FB67b56C85c5';
+      this.broker = await createZGComputeNetworkBroker(
+        this.wallet as ethers.Wallet,
+        LEDGER_CA,
+        INFERENCE_CA
+      );
 
       if (config.og.computeProviderAddress) {
         this.providerAddress = config.og.computeProviderAddress;
@@ -72,13 +79,19 @@ export class OGComputeClient {
         getServiceMetadata: (addr: string) => Promise<ServiceMetadata>;
         acknowledgeProviderSigner: (addr: string) => Promise<void>;
       };
-      ledger: { depositFund: (amount: string) => Promise<void> };
     };
 
-    const services = await b.inference.listService();
+    let services: Array<{ provider: string; serviceType: string }> = [];
+    try {
+      services = await b.inference.listService();
+    } catch {
+      // 0G Compute testnet has no registered providers yet — inference will be unavailable
+      throw new Error('0G Compute: no inference providers available on testnet (marketplace not yet live)');
+    }
+
     // Prefer TeeML verifiable services
-    const teeService = services.find(s => s.serviceType?.includes('tee')) ?? services[0];
-    if (!teeService) throw new Error('No 0G Compute services available');
+    const teeService = services.find(s => s.serviceType?.toLowerCase().includes('tee')) ?? services[0];
+    if (!teeService) throw new Error('0G Compute: no inference providers found');
 
     this.providerAddress = teeService.provider;
     await this.setupProvider(this.providerAddress);
