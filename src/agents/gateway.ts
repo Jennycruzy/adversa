@@ -91,16 +91,17 @@ export class GatewayAgent extends BaseAgent {
   }
 
   private startWebhookServer(): void {
-    this.webhookServer.use(express.json());
-
-    this.webhookServer.post('/webhook/github', async (req, res) => {
+    // Use raw body for webhook route so HMAC is computed over original bytes
+    this.webhookServer.post('/webhook/github', express.raw({ type: 'application/json' }), async (req, res) => {
       const signature = req.headers['x-hub-signature-256'] as string ?? '';
-      const rawBody = JSON.stringify(req.body);
+      const rawBody = req.body as Buffer;
 
-      if (!this.github.verifyWebhookSignature(rawBody, signature)) {
+      if (!this.github.verifyWebhookSignature(rawBody.toString('utf8'), signature)) {
         res.status(401).json({ error: 'Invalid signature' });
         return;
       }
+
+      req.body = JSON.parse(rawBody.toString('utf8'));
 
       const event = req.headers['x-github-event'] as string;
       const payload = req.body as {
