@@ -58,7 +58,129 @@ Response format: JSON only.
   }
 
   protected async onStart(): Promise<void> {
-    logger.info('Security agent ready', { peerId: this.peerId.slice(0, 12) });
+    logger.info('Security agent ready', { peerId: (this.peerId || '').slice(0, 12) });
+  }
+
+  private heuristicScan(diff: string, files: string[]): { findings: ReviewFinding[]; summary: string; overallRisk: string } {
+    const findings: ReviewFinding[] = [];
+    const lines = diff.split('\n');
+
+    const rules: Array<{
+      pattern: RegExp;
+      severity: ReviewFinding['severity'];
+      title: string;
+      description: string;
+      recommendation: string;
+      cweId: string;
+      cvssScore: number;
+    }> = [
+      {
+        pattern: /password\s*=\s*['"][^'"]{3,}['"]/i,
+        severity: 'critical', title: 'Hardcoded Password',
+        description: 'A plaintext password is hardcoded in the source. Credentials committed to version control are trivially extractable.',
+        recommendation: 'Move credentials to environment variables or a secrets manager.',
+        cweId: 'CWE-259', cvssScore: 9.1,
+      },
+      {
+        pattern: /(api[_-]?key|secret[_-]?key|access[_-]?token)\s*=\s*['"][a-zA-Z0-9+/=_-]{8,}['"]/i,
+        severity: 'critical', title: 'Hardcoded API Key / Secret',
+        description: 'An API key or secret token is hardcoded in source code.',
+        recommendation: 'Store secrets in environment variables, AWS Secrets Manager, or Vault.',
+        cweId: 'CWE-798', cvssScore: 8.8,
+      },
+      {
+        pattern: /eval\s*\(/,
+        severity: 'high', title: 'Use of eval()',
+        description: 'eval() executes arbitrary code and can be exploited for remote code execution if user input reaches it.',
+        recommendation: 'Remove eval(). Use JSON.parse() for data, or a safe alternative.',
+        cweId: 'CWE-95', cvssScore: 8.1,
+      },
+      {
+        pattern: /exec\s*\(\s*['"`][^'"`]*\$\{/,
+        severity: 'high', title: 'Command Injection via Template Literal',
+        description: 'Shell command is constructed with template literals containing dynamic values.',
+        recommendation: 'Use execFile() with an argument array, never interpolate user input into shell strings.',
+        cweId: 'CWE-78', cvssScore: 8.6,
+      },
+      {
+        pattern: /innerHTML\s*=\s*[^'"]/,
+        severity: 'high', title: 'XSS via innerHTML Assignment',
+        description: 'Setting innerHTML with dynamic content enables stored or reflected XSS.',
+        recommendation: 'Use textContent for plain text, or sanitize with DOMPurify before innerHTML.',
+        cweId: 'CWE-79', cvssScore: 7.4,
+      },
+      {
+        pattern: /sql.*\+\s*\w|query.*\+\s*\w/i,
+        severity: 'high', title: 'Potential SQL Injection via String Concatenation',
+        description: 'SQL query built by string concatenation with dynamic values is vulnerable to injection.',
+        recommendation: 'Use parameterized queries or a prepared statement API.',
+        cweId: 'CWE-89', cvssScore: 9.8,
+      },
+      {
+        pattern: /crypto\.createHash\(['"]md5['"]\)|crypto\.createHash\(['"]sha1['"]\)/i,
+        severity: 'medium', title: 'Weak Cryptographic Hash (MD5/SHA-1)',
+        description: 'MD5 and SHA-1 are broken for security purposes and should not be used for passwords or integrity checks.',
+        recommendation: 'Use SHA-256 or stronger. For passwords, use bcrypt, scrypt, or argon2.',
+        cweId: 'CWE-327', cvssScore: 5.9,
+      },
+      {
+        pattern: /http:\/\//,
+        severity: 'medium', title: 'Insecure HTTP Endpoint',
+        description: 'Plaintext HTTP is used, exposing data in transit to interception.',
+        recommendation: 'Use HTTPS for all external communications.',
+        cweId: 'CWE-319', cvssScore: 5.3,
+      },
+      {
+        pattern: /console\.log\(.*(?:password|token|secret|key)/i,
+        severity: 'medium', title: 'Sensitive Data Logged to Console',
+        description: 'Credentials or secrets are being logged, creating an exposure risk in log aggregation systems.',
+        recommendation: 'Remove or redact sensitive fields before logging.',
+        cweId: 'CWE-532', cvssScore: 5.5,
+      },
+      {
+        pattern: /TODO|FIXME|HACK|XXX/,
+        severity: 'low', title: 'Unresolved TODO / Security Debt',
+        description: 'Code contains unresolved TODO/FIXME markers that may indicate incomplete security controls.',
+        recommendation: 'Resolve or track these markers before shipping to production.',
+        cweId: 'CWE-1164', cvssScore: 2.0,
+      },
+    ];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.startsWith('+')) continue; // Only scan added lines
+      const lineNum = i + 1;
+      const file = files.find(f => diff.slice(0, diff.indexOf(line)).includes(f)) ?? files[0] ?? 'unknown';
+
+      for (const rule of rules) {
+        if (rule.pattern.test(line)) {
+          // Avoid duplicate findings for the same rule
+          if (findings.some(f => f.title === rule.title)) continue;
+          findings.push({
+            id: uuidv4(),
+            category: 'security',
+            severity: rule.severity,
+            title: rule.title,
+            description: rule.description,
+            location: { file, startLine: lineNum, endLine: lineNum, snippet: line.slice(0, 120) },
+            recommendation: rule.recommendation,
+            confidence: 72,
+            cweId: rule.cweId,
+            cvssScore: rule.cvssScore,
+          });
+        }
+      }
+    }
+
+    const critical = findings.filter(f => f.severity === 'critical').length;
+    const high = findings.filter(f => f.severity === 'high').length;
+    const overallRisk = critical > 0 ? 'critical' : high > 0 ? 'high' : findings.length > 0 ? 'medium' : 'low';
+
+    return {
+      findings,
+      summary: `Heuristic security scan (0G Compute unavailable): ${findings.length} finding(s) — ${critical} critical, ${high} high.`,
+      overallRisk,
+    };
   }
 
   getMCPServices(): MCPServiceDef[] {
@@ -122,21 +244,21 @@ ${diff.slice(0, 12000)}
 
 Return ONLY valid JSON matching the schema above.`;
 
-    const { response, teeProof, isValid } = await this.callLLM(userMessage);
-
+    let teeProof: string | undefined;
+    let isValid = false;
     let parsed: { findings: ReviewFinding[]; summary: string; overallRisk: string };
+
     try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      const result = await this.callLLM(userMessage);
+      teeProof = result.teeProof;
+      isValid = result.isValid;
+      const jsonMatch = result.response.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON in LLM response');
       parsed = JSON.parse(jsonMatch[0]) as typeof parsed;
       if (!Array.isArray(parsed.findings)) parsed.findings = [];
     } catch (err) {
-      logger.warn('Failed to parse security findings JSON', { err, responseStart: response.slice(0, 200) });
-      parsed = {
-        findings: [],
-        summary: `Security analysis complete. Raw output: ${response.slice(0, 300)}`,
-        overallRisk: 'medium',
-      };
+      logger.warn('0G Compute inference unavailable — running heuristic security scan', { err: String(err).slice(0, 120) });
+      parsed = this.heuristicScan(diff, files ?? []);
     }
 
     // Normalize and stamp findings

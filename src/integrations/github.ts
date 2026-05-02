@@ -119,24 +119,30 @@ export class GitHubClient {
     prNumber: number,
     commitSha: string,
     findings: ReviewFinding[],
-    summary: string
+    body: string
   ): Promise<void> {
-    const blocking = findings.filter(f => ['critical', 'high'].includes(f.severity));
+    // Use COMMENT event — REQUEST_CHANGES is blocked when reviewer == PR author,
+    // which is the case when the bot token belongs to the repo owner.
+    const inlineComments = findings
+      .filter(f => ['critical', 'high'].includes(f.severity) && f.location.file && (f.location.endLine || f.location.startLine) > 0)
+      .slice(0, 20)
+      .map(f => ({
+        path: f.location.file,
+        line: f.location.endLine || f.location.startLine,
+        side: 'RIGHT' as const,
+        body: this.formatFinding(f),
+      }));
+
     await this.octokit.pulls.createReview({
       owner,
       repo,
       pull_number: prNumber,
       commit_id: commitSha,
-      event: 'REQUEST_CHANGES',
-      body: this.formatReviewBody(findings, summary, false),
-      comments: blocking.slice(0, 20).map(f => ({
-        path: f.location.file,
-        line: f.location.endLine || f.location.startLine,
-        side: 'RIGHT' as const,
-        body: this.formatFinding(f),
-      })),
+      event: 'COMMENT',
+      body,
+      comments: inlineComments,
     });
-    logger.info('Requested changes on PR', { owner, repo, prNumber, blockingCount: blocking.length });
+    logger.info('Posted review comment on PR', { owner, repo, prNumber, inlineCount: inlineComments.length });
   }
 
   async approvePR(
