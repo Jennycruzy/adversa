@@ -110,6 +110,11 @@ function syncOffline() {
   const qc = el('queue-count'); if(qc) qc.textContent = `${S.queueLength} queued`;
   const tog = el('offline-toggle');
   if (tog) { tog.textContent = S.offlineMode ? 'Restore Internet' : 'Kill Internet'; tog.className = 'cmd-btn ' + (S.offlineMode ? 'secondary' : 'danger'); }
+  const headTog = el('offline-toggle-header');
+  if (headTog) {
+    headTog.textContent = S.offlineMode ? 'Restore Internet' : 'Kill Internet';
+    headTog.className = 'offline-header-btn ' + (S.offlineMode ? 'online' : '');
+  }
   const ts = el('toggle-status');
   if (ts) { ts.textContent = S.offlineMode ? 'MESH ONLY' : 'Connected'; ts.style.color = S.offlineMode ? '#F59E0B' : '#10B981'; }
 }

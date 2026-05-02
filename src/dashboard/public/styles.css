@@ -105,6 +105,28 @@ html, body {
 .header-left { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
+.offline-header-btn {
+  min-height: var(--touch);
+  padding: 0 12px;
+  border-radius: var(--r);
+  border: 1px solid rgba(239,68,68,0.45);
+  background: rgba(239,68,68,0.16);
+  color: var(--red-l);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.offline-header-btn.online {
+  border-color: rgba(16,185,129,0.45);
+  background: rgba(16,185,129,0.14);
+  color: var(--green-l);
+}
+.offline-header-btn:active { transform: scale(0.97); }
+
 /* Logo */
 .logo { display: flex; align-items: center; gap: 10px; }
 .logo-mark { width: 28px; height: 28px; flex-shrink: 0; }
@@ -280,6 +302,10 @@ html, body {
   .panel { display: none; flex-direction: column; height: calc(100vh - 57px - 52px); overflow-y: auto; }
   .panel.active { display: flex; }
   .stats-bar { display: none; }
+  .header { padding: 0 10px; gap: 8px; }
+  .logo-sub, .status-pill { display: none; }
+  .offline-header-btn { padding: 0 10px; font-size: 9px; }
+  .connectivity-badge { font-size: 10px; }
 }
 
 /* ─── Panel / Glass Card ─────────────────────────────────────────────────── */
