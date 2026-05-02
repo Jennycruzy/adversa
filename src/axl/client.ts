@@ -43,7 +43,8 @@ export class AXLClient {
   }
 
   async initialize(): Promise<string> {
-    const topo = await this.getTopology();
+    // Use more retries on startup to tolerate Docker DNS propagation delay.
+    const topo = await this.getTopology(10, 1000);
     this.selfPeerId = topo.selfPeerId;
     logger.info('AXL client initialized', { peerId: this.selfPeerId, baseUrl: this.baseUrl });
     return this.selfPeerId;
@@ -111,7 +112,7 @@ export class AXLClient {
 
   // ─── Topology discovery ───────────────────────────────────────────────────────
 
-  async getTopology(): Promise<{
+  async getTopology(retries = 3, delayMs = 500): Promise<{
     selfPeerId: string;
     peers: Array<{
       peerId: string;
@@ -122,7 +123,7 @@ export class AXLClient {
       latencyMs?: number;
     }>;
   }> {
-    const res = await this.fetchWithRetry(`${this.baseUrl}/topology`, { method: 'GET' });
+    const res = await this.fetchWithRetry(`${this.baseUrl}/topology`, { method: 'GET' }, retries, delayMs);
     const body = await res.json() as {
       self_peer_id: string;
       peers: Array<{
