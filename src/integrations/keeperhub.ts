@@ -266,6 +266,67 @@ export class KeeperHubClient {
     };
   }
 
+  // ─── Direct ethers.js on-chain recording (no KeeperHub dependency) ───────────
+
+  /**
+   * Call recordReview() directly via ethers.js on the 0G Galileo registry.
+   * This is the primary reliable path — KeeperHub workflow is secondary (manual demo).
+   */
+  async recordReviewDirect(
+    consensus: ConsensusResult,
+    storageRoot: string,
+    registryAddress: string
+  ): Promise<{ txHash?: string; txUrl?: string; error?: string }> {
+    const privateKey = config.og.privateKey ?? config.og.deployerPrivateKey;
+    const rpcUrl = config.og.rpcUrl;
+
+    if (!privateKey || !rpcUrl || !registryAddress) {
+      logger.warn('recordReviewDirect: missing privateKey, rpcUrl, or registryAddress — skipping');
+      return {};
+    }
+
+    try {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const signer = new ethers.Wallet(privateKey, provider);
+
+      const abi = [
+        'function recordReview(bytes32 prHash, address[] calldata reviewerAgents, bool approved, string calldata storageRoot, string calldata teeProofId, uint256 confidenceScore, uint256 exploitsFound, uint256 exploitsMitigated) external',
+      ];
+      const contract = new ethers.Contract(registryAddress, abi, signer);
+
+      const prHashBytes = ethers.keccak256(ethers.toUtf8Bytes(consensus.prHash));
+      const agentAddresses = consensus.votes
+        .map(v => v.agentPeerId)
+        .filter(id => /^0x[0-9a-fA-F]{40}$/.test(id));
+
+      const tx = await (contract['recordReview'] as (
+        prHash: string, agents: string[], approved: boolean,
+        storageRoot: string, teeProofId: string,
+        confidence: bigint, exploitsFound: bigint, exploitsMitigated: bigint
+      ) => Promise<{ hash: string; wait: () => Promise<{ hash: string } | null> }>)(
+        prHashBytes,
+        agentAddresses,
+        consensus.approved,
+        storageRoot,
+        consensus.teeProofIds[0] ?? '',
+        BigInt(consensus.confidenceScore),
+        BigInt(consensus.exploitsFound.length),
+        BigInt(consensus.exploitsMitigated)
+      );
+
+      const receipt = await tx.wait();
+      const txHash = receipt?.hash ?? tx.hash;
+      const txUrl = `https://chainscan-galileo.0g.ai/tx/${txHash}`;
+
+      logger.info('Review recorded directly on 0G chain', { txHash, txUrl, approved: consensus.approved });
+      return { txHash, txUrl };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      logger.error('Direct chain record failed', { error, registryAddress });
+      return { error };
+    }
+  }
+
   // ─── Workflow: Record review on 0G Chain ─────────────────────────────────────
 
   async recordReviewOnChain(

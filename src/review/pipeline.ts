@@ -24,6 +24,7 @@ import { PeerInfo } from '../types/agent.js';
 export interface PipelineResult {
   consensus: ConsensusResult;
   txHash?: string;
+  txUrl?: string;
   storageRoot?: string;
   githubAction: 'merged' | 'rejected' | 'pending_human';
 }
@@ -337,16 +338,53 @@ export class ReviewPipeline {
 
     let githubAction: PipelineResult['githubAction'] = 'pending_human';
     let txHash: string | undefined;
+    let txUrl: string | undefined;
 
     const headSha = pr.headSha;
     const confidencePct = (consensusResult.confidenceScore / 100).toFixed(1);
     const guardrail = enforceAutoMergeGuardrails(consensusResult);
 
+    // ─── On-chain recording (direct ethers.js, before GitHub actions so txHash is available) ──
+    if (config.og.registryAddress) {
+      const directResult = await this.keeperhub.recordReviewDirect(
+        consensusResult,
+        storageUpload.rootHash,
+        config.og.registryAddress
+      );
+      txHash = directResult.txHash;
+      txUrl = directResult.txUrl;
+
+      emitMeshEvent('chain-tx', {
+        action: txHash ? 'review-recorded' : 'review-record-failed',
+        prHash,
+        approved: consensusResult.approved,
+        storageRoot: storageUpload.rootHash,
+        txHash: txHash ?? null,
+        txUrl: txUrl ?? null,
+        error: directResult.error ?? null,
+      });
+
+      // Also attempt KeeperHub workflow (fire-and-forget — for manual demo on app.keeperhub.com)
+      this.syncEngine.executeOrQueue('keeperhub-workflow', {
+        consensus: consensusResult as unknown as Record<string, unknown>,
+        storageRoot: storageUpload.rootHash,
+        registryAddress: config.og.registryAddress,
+      }).catch(() => { /* expected to fail; direct call is the reliable path */ });
+    }
+
+    // Build proof lines shared by approve and reject comments
+    const proofLines = [
+      `- **0G Storage root:** \`${storageUpload.rootHash}\``,
+      txHash
+        ? `- **0G Chain tx:** [\`${txHash.slice(0, 20)}…\`](https://chainscan-galileo.0g.ai/tx/${txHash})`
+        : '- **0G Chain:** recording attempted on 0G Galileo testnet',
+    ].join('\n');
+
     if (guardrail.allowed) {
       // Post an APPROVE review first so judges can see the reason on GitHub
       const approveBody = this.github.formatReviewBody(
         allFindings,
-        `Confidence: ${confidencePct}% · Exploits found: ${exploits.length}, mitigated: ${consensusResult.exploitsMitigated} · 0G Storage root: \`${storageUpload.rootHash}\``,
+        `Confidence: ${confidencePct}% · Exploits found: ${exploits.length}, mitigated: ${consensusResult.exploitsMitigated} · 0G Storage root: \`${storageUpload.rootHash}\`${txHash ? ` · [0G tx](https://chainscan-galileo.0g.ai/tx/${txHash})` : ''}`,
         true
       );
       await this.syncEngine.executeOrQueue('github-approve-pr', {
@@ -362,7 +400,8 @@ export class ReviewPipeline {
         `Merged by ADVERSA — confidence ${confidencePct}%`,
         `Exploits found: ${exploits.length}, mitigated: ${consensusResult.exploitsMitigated}`,
         `0G Storage: ${storageUpload.rootHash}`,
-      ].join('\n\n');
+        txHash ? `0G Chain tx: ${txHash}` : '',
+      ].filter(Boolean).join('\n\n');
 
       const mergeResult = await this.syncEngine.executeOrQueue('github-merge', {
         owner: pr.repoOwner,
@@ -374,7 +413,7 @@ export class ReviewPipeline {
       githubAction = 'merged';
       emitMeshEvent('github-action', { action: 'merged', prNumber: pr.number, queued: mergeResult === 'queued', prHash });
     } else {
-      // Post a REQUEST_CHANGES review with inline comments on every blocking issue
+      // Post a review comment with inline comments on every blocking issue
       const reviewBody = this.github.formatReviewBody(
         consensusResult.blockingIssues,
         `Confidence: ${confidencePct}% · ${consensusResult.blockingIssues.length} blocking issue(s) · Exploits: ${exploits.length} found, ${consensusResult.exploitsMitigated} mitigated`,
@@ -401,9 +440,8 @@ export class ReviewPipeline {
         '### Blocking Issues',
         blockingList || '_No specific findings — consensus threshold not met._',
         '',
-        `### On-Chain Proof`,
-        `- **0G Storage root:** \`${storageUpload.rootHash}\``,
-        `- **Review recorded via KeeperHub** on 0G Galileo testnet`,
+        '### On-Chain Proof',
+        proofLines,
         '',
         '*ADVERSA — Adversarial AI Code Review Swarm · AXL Mesh · 0G Compute TEE*',
       ].join('\n');
@@ -424,22 +462,6 @@ export class ReviewPipeline {
       });
     }
 
-    // Record on 0G Chain through KeeperHub only. The sync engine queues this
-    // workflow while offline and KeeperHub handles transaction retry semantics.
-    if (config.og.registryAddress) {
-      const recordResult = await this.syncEngine.executeOrQueue('keeperhub-workflow', {
-        consensus: consensusResult as unknown as Record<string, unknown>,
-        storageRoot: storageUpload.rootHash,
-        registryAddress: config.og.registryAddress,
-      });
-      emitMeshEvent('chain-tx', {
-        action: recordResult === 'queued' ? 'review-queued' : 'review-workflow-submitted',
-        prHash,
-        approved: consensusResult.approved,
-        storageRoot: storageUpload.rootHash,
-      });
-    }
-
     logger.info('Pipeline complete', {
       prNumber: pr.number,
       approved: consensusResult.approved,
@@ -448,7 +470,7 @@ export class ReviewPipeline {
       txHash,
     });
 
-    return { consensus: consensusResult, txHash, storageRoot: storageUpload.rootHash, githubAction };
+    return { consensus: consensusResult, txHash, txUrl, storageRoot: storageUpload.rootHash, githubAction };
   }
 
   // ─── Helper methods ───────────────────────────────────────────────────────────

@@ -190,6 +190,7 @@ export class GatewayAgent extends BaseAgent {
         confidenceScore: result.consensus.confidenceScore,
         githubAction: result.githubAction,
         txHash: result.txHash,
+        txUrl: result.txUrl,
         storageRoot: result.storageRoot,
         exploitsFound: result.consensus.exploitsFound.length,
         exploitsMitigated: result.consensus.exploitsMitigated,

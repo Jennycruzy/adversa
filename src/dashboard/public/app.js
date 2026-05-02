@@ -52,7 +52,7 @@ socket.on('pipeline-start',    d => { S.currentPhase = 0; S.votes = {}; renderPh
 socket.on('pipeline-phase',    d => { S.currentPhase = d.phase; renderPhases(); });
 socket.on('pipeline-complete', d => {
   S.currentPhase = 7; renderPhases();
-  showVerdict(d.approved, d.confidenceScore, d.blockingIssues);
+  showVerdict(d.approved, d.confidenceScore, d.blockingIssues, d.txUrl);
   if (d.txHash) txToast(d.txHash, d.action);
   const badge = d.approved ? '<span class="badge badge-green">APPROVED</span>' : '<span class="badge badge-red">REJECTED</span>';
   el('pipeline-status').innerHTML = badge;
@@ -82,7 +82,12 @@ socket.on('offline-status', d => { S.offlineMode = !d.online; syncOffline(); });
 socket.on('action-queued',  d => { S.queueLength = d.queueLength; syncOffline(); addMsg({ fromRole: 'gateway', type: 'queue', content: `Queued: ${d.actionType} (${d.queueLength} total)`, ts: Date.now() }); });
 socket.on('action-synced',  d => { S.queueLength = d.remaining; syncOffline(); });
 socket.on('sync-complete',  d => { S.queueLength = 0; syncOffline(); addMsg({ fromRole: 'gateway', type: 'sync', content: `Sync complete — ${d.completed} actions replayed`, ts: Date.now() }); });
-socket.on('chain-tx',       d => { txToast(d.txHash, d.action); addMsg({ fromRole: 'gateway', type: 'chain-tx', content: `On-chain: ${d.action}${d.storageRoot ? ' · 0G root: ' + d.storageRoot.slice(0,20) + '…' : ''}`, ts: Date.now() }); });
+socket.on('chain-tx', d => {
+  if (d.txHash) txToast(d.txHash, d.action);
+  const rootPart = d.storageRoot ? ` · root: ${d.storageRoot.slice(0,16)}…` : '';
+  const txPart   = d.txHash ? ` · tx: ${d.txHash.slice(0,14)}…` : (d.error ? ` · err: ${String(d.error).slice(0,40)}` : '');
+  addMsg({ fromRole: 'gateway', type: 'chain-tx', content: `On-chain: ${d.action}${rootPart}${txPart}`, ts: Date.now(), txHash: d.txHash, txUrl: d.txUrl });
+});
 socket.on('storage-proof',  d => { addMsg({ fromRole: 'gateway', type: 'storage', content: `0G Storage: ${d.approved ? 'approved' : 'rejected'} review stored · root: ${(d.rootHash||'').slice(0,24)}…${d.txHash ? ' · tx: ' + d.txHash.slice(0,16) + '…' : ''}`, ts: Date.now(), conf: 100 }); });
 socket.on('inft-update',    d => { const a = Object.values(S.agents).find(x=>x.role===d.role); if(a) a.evolutionCount=(a.evolutionCount||0)+1; refreshAgents(); addMsg({ fromRole: d.role, type: 'inft', content: `iNFT ${d.action}: ${d.role} agent (evolution #${d.version||'?'})`, ts: Date.now() }); });
 socket.on('human-detected', d => addMsg({ fromRole: 'human', type: 'human', content: `Human detected — auto-merge paused. ${d.reason||''}`, ts: Date.now() }));
@@ -157,7 +162,7 @@ function clearVerdict() {
   const c = el('consensus-confidence'); if(c) c.textContent = '—';
 }
 
-function showVerdict(approved, score, blockingIssues) {
+function showVerdict(approved, score, blockingIssues, txUrl) {
   const r = el('consensus-result'); if (!r) return;
   const pct = ((score||0)/100).toFixed(1);
   r.className = `consensus-verdict ${approved ? 'approved' : 'rejected'}`;
@@ -168,6 +173,9 @@ function showVerdict(approved, score, blockingIssues) {
       return `<div class="reject-reason"><span class="chip ${sevCls}" style="font-size:9px">${f.severity.toUpperCase()}</span> ${esc(f.title)}</div>`;
     }).join('');
     html += `<div class="reject-reasons">${items}</div>`;
+  }
+  if (txUrl) {
+    html += `<div style="margin-top:6px;font-size:10px;opacity:0.7"><a href="${txUrl}" target="_blank" rel="noopener" style="color:#14B8A6;text-decoration:none">⛓ view on 0G explorer ↗</a></div>`;
   }
   r.innerHTML = html;
   const c = el('consensus-confidence'); if(c) c.textContent = `${pct}%`;
@@ -213,6 +221,9 @@ function addMsg(msg) {
   const time = new Date(msg.ts || Date.now()).toLocaleTimeString('en', { hour12: false });
   const sev = msg.severity ? ` <span class="chip ${msg.severity==='critical'||msg.severity==='high'?'crit':'medium'}">${msg.severity.toUpperCase()}</span>` : '';
 
+  const txLink = msg.txUrl
+    ? `<a href="${msg.txUrl}" target="_blank" rel="noopener" style="color:#14B8A6;font-size:9px;text-decoration:none;opacity:0.85" title="View on 0G explorer"> ↗ explorer</a>`
+    : '';
   const div = document.createElement('div');
   div.className = `t-msg ${role}`;
   div.innerHTML = `
@@ -221,7 +232,7 @@ function addMsg(msg) {
       <span class="t-role" style="color:${COLORS[role]||'#888'};font-size:9px;opacity:0.7"> ← ${role}</span>
       <span class="t-time">${time}</span>
     </div>
-    <div class="t-body">${esc(String(msg.content||'')).slice(0,400)}</div>
+    <div class="t-body">${esc(String(msg.content||'')).slice(0,400)}${txLink}</div>
     ${conf!==undefined ? `<div class="t-conf">conf: <span class="chip ${lvl}">${conf}%</span></div>` : ''}
   `;
   feed.appendChild(div);
