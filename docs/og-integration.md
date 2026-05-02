@@ -81,11 +81,11 @@ import { ZgFile, Indexer } from '@0gfoundation/0g-ts-sdk';
 // Build file from JSON bytes
 const jsonBytes = Buffer.from(JSON.stringify(data, null, 2));
 const blob = new Blob([jsonBytes], { type: 'application/json' });
-const file = new ZgFile(blob as any);
+const file = await ZgFile.fromFilePath(tempPath);
 
 // Compute Merkle tree — this is the content address
 const [tree, treeErr] = await file.merkleTree();
-const rootHash = (tree as any).rootHash() as string;
+const rootHash = tree.rootHash();
 
 // Upload to 0G Storage network
 const indexer = new Indexer(config.og.storageIndexerUrl);

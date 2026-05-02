@@ -1,4 +1,3 @@
-import { OGChainClient } from '../integrations/og-chain.js';
 import { KeeperHubClient } from '../integrations/keeperhub.js';
 import { IntelligenceEmbedder } from './embed-intelligence.js';
 import { AgentIntelligence } from './types.js';
@@ -7,19 +6,16 @@ import { logger } from '../utils/logger.js';
 import { emitMeshEvent } from '../dashboard/server.js';
 
 export class INFTMinter {
-  private chain: OGChainClient;
   private keeperhub: KeeperHubClient;
   private embedder: IntelligenceEmbedder;
 
   constructor() {
-    this.chain = new OGChainClient();
     this.keeperhub = new KeeperHubClient();
     this.embedder = new IntelligenceEmbedder();
   }
 
   async initialize(): Promise<void> {
     await Promise.all([
-      this.chain.initialize(),
       this.keeperhub.initialize(),
       this.embedder.initialize(),
     ]);

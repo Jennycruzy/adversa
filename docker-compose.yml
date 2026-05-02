@@ -1,8 +1,5 @@
-version: '3.9'
-
 # ADVERSA — Multi-node AXL mesh deployment
-# Each agent runs its own AXL broker instance (sidecar containers).
-# AXL broker is built from src/axl-broker/server.ts — no external image needed.
+# Each agent runs its own Gensyn AXL node sidecar built from github.com/gensyn-ai/axl.
 
 networks:
   adversa-mesh:
@@ -23,6 +20,8 @@ x-axl-build: &axl-build
     - adversa-mesh
   environment:
     AXL_NODE_PORT: "9002"
+    AXL_BRIDGE_ADDR: "0.0.0.0"
+    AXL_LISTEN: "tls://0.0.0.0:9001"
 
 x-agent-base: &agent-base
   build:
@@ -65,21 +64,22 @@ services:
       retries: 3
       start_period: 10s
 
-  # ─── AXL Mesh Brokers (one per agent) ────────────────────────────────────────
+  # ─── AXL Mesh Nodes (one per agent) ──────────────────────────────────────────
 
   axl-gateway:
     <<: *axl-build
     environment:
       AGENT_ROLE: gateway
       AXL_NODE_PORT: "9002"
-      PEERS: "security=axl-security:9002,performance=axl-performance:9002,style=axl-style:9002,redteam=axl-redteam:9002,coder=axl-coder:9002"
+      AXL_BRIDGE_ADDR: "0.0.0.0"
+      AXL_LISTEN: "tls://0.0.0.0:9001"
     ports:
       - "9002:9002"
     networks:
       adversa-mesh:
         ipv4_address: 172.20.0.10
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:9002/health').then(()=>process.exit(0)).catch(()=>process.exit(1))\""]
+      test: ["CMD-SHELL", "curl -f http://localhost:9002/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,7 +90,9 @@ services:
     environment:
       AGENT_ROLE: security
       AXL_NODE_PORT: "9002"
-      PEERS: "gateway=axl-gateway:9002,performance=axl-performance:9002,style=axl-style:9002,redteam=axl-redteam:9002,coder=axl-coder:9002"
+      AXL_BRIDGE_ADDR: "0.0.0.0"
+      AXL_LISTEN: "tls://0.0.0.0:9001"
+      AXL_PEERS: "tls://axl-gateway:9001"
     ports:
       - "9003:9002"
     networks:
@@ -102,7 +104,9 @@ services:
     environment:
       AGENT_ROLE: performance
       AXL_NODE_PORT: "9002"
-      PEERS: "gateway=axl-gateway:9002,security=axl-security:9002,style=axl-style:9002,redteam=axl-redteam:9002,coder=axl-coder:9002"
+      AXL_BRIDGE_ADDR: "0.0.0.0"
+      AXL_LISTEN: "tls://0.0.0.0:9001"
+      AXL_PEERS: "tls://axl-gateway:9001"
     ports:
       - "9004:9002"
     networks:
@@ -114,7 +118,9 @@ services:
     environment:
       AGENT_ROLE: style
       AXL_NODE_PORT: "9002"
-      PEERS: "gateway=axl-gateway:9002,security=axl-security:9002,performance=axl-performance:9002,redteam=axl-redteam:9002,coder=axl-coder:9002"
+      AXL_BRIDGE_ADDR: "0.0.0.0"
+      AXL_LISTEN: "tls://0.0.0.0:9001"
+      AXL_PEERS: "tls://axl-gateway:9001"
     ports:
       - "9005:9002"
     networks:
@@ -126,7 +132,9 @@ services:
     environment:
       AGENT_ROLE: redteam
       AXL_NODE_PORT: "9002"
-      PEERS: "gateway=axl-gateway:9002,security=axl-security:9002,performance=axl-performance:9002,style=axl-style:9002,coder=axl-coder:9002"
+      AXL_BRIDGE_ADDR: "0.0.0.0"
+      AXL_LISTEN: "tls://0.0.0.0:9001"
+      AXL_PEERS: "tls://axl-gateway:9001"
     ports:
       - "9006:9002"
     networks:
@@ -138,7 +146,9 @@ services:
     environment:
       AGENT_ROLE: coder
       AXL_NODE_PORT: "9002"
-      PEERS: "gateway=axl-gateway:9002,security=axl-security:9002,performance=axl-performance:9002,style=axl-style:9002,redteam=axl-redteam:9002"
+      AXL_BRIDGE_ADDR: "0.0.0.0"
+      AXL_LISTEN: "tls://0.0.0.0:9001"
+      AXL_PEERS: "tls://axl-gateway:9001"
     ports:
       - "9007:9002"
     networks:
@@ -161,7 +171,7 @@ services:
         condition: service_healthy
     ports:
       - "3001:3001"
-      - "3002:3002"
+      - "4002:3002"
     volumes:
       - offline-data:/app/data
     networks:

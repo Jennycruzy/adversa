@@ -42,7 +42,7 @@ interface ServiceMetadata {
  *     chatID   = the ZG-Res-Key header value (optional, auto-fetched if omitted)
  */
 export class OGComputeClient {
-  private broker: import('@0gfoundation/0g-compute-ts-sdk').ZGComputeNetworkBroker | null = null;
+  private broker: import('@0glabs/0g-serving-broker').ZGComputeNetworkBroker | null = null;
   private wallet: ethers.Wallet | null = null;
   private providerAddress = '';
   private serviceMetadata: ServiceMetadata | null = null;
@@ -68,7 +68,7 @@ export class OGComputeClient {
       const provider = new ethers.JsonRpcProvider(config.og.rpcUrl);
       this.wallet = new ethers.Wallet(config.og.privateKey, provider);
 
-      const { createZGComputeNetworkBroker } = await import('@0gfoundation/0g-compute-ts-sdk');
+      const { createZGComputeNetworkBroker } = await import('@0glabs/0g-serving-broker');
       // Pass contract addresses only when explicitly configured; otherwise let
       // the SDK resolve its own defaults for the connected chain (Galileo testnet).
       this.broker = await createZGComputeNetworkBroker(

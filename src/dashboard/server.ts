@@ -182,11 +182,24 @@ app.post('/api/offline-mode', (req, res) => {
   const { enabled } = req.body as { enabled?: boolean };
   offlineModeEnabled = enabled ?? true;
   io.emit('offline-status', { online: !offlineModeEnabled, timestamp: Date.now() });
+  if (offlineModeHandler) {
+    Promise.resolve(offlineModeHandler(offlineModeEnabled)).catch(err =>
+      logger.error('Offline mode handler error', { err })
+    );
+  }
   res.json({ success: true, offlineMode: offlineModeEnabled });
 });
 
 let offlineModeEnabled = false;
 export function isOfflineModeEnabled(): boolean { return offlineModeEnabled; }
+
+let offlineModeHandler: ((enabled: boolean) => Promise<void> | void) | null = null;
+
+export function registerOfflineModeHandler(
+  handler: (enabled: boolean) => Promise<void> | void
+): void {
+  offlineModeHandler = handler;
+}
 
 // ─── Agent state cache (for replay on new connections) ───────────────────────
 

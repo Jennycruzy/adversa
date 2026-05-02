@@ -87,6 +87,14 @@ export class TopologyManager {
     return Array.from(this.peers.values()).filter(p => p.role === role && p.online);
   }
 
+  updatePeerRole(peerId: string, role: AgentRole): void {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.role === role) return;
+    this.peers.set(peerId, { ...peer, role });
+    this.emit('agent-online', { peerId, role, address: peer.address });
+    logger.info('Peer role learned from heartbeat', { peerId: peerId.slice(0, 12), role });
+  }
+
   getOnlinePeers(): PeerInfo[] {
     return Array.from(this.peers.values()).filter(p => p.online);
   }

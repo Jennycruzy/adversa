@@ -77,47 +77,15 @@ export class OGChainClient {
   }
 
   async recordReview(consensus: ConsensusResult, storageRoot: string): Promise<string | null> {
-    if (!this.initialized) await this.initialize();
-    if (!this.registry) {
-      logger.warn('Registry contract not configured — skipping on-chain record');
-      return null;
-    }
-
-    try {
-      const prHashBytes = ethers.keccak256(ethers.toUtf8Bytes(consensus.prHash));
-      const reviewerAddresses = consensus.votes
-        .map(v => v.agentPeerId)
-        .filter(id => ethers.isAddress(id));
-
-      const tx = await this.registry.recordReview(
-        prHashBytes,
-        reviewerAddresses.length > 0 ? reviewerAddresses : [ethers.ZeroAddress],
-        consensus.approved,
-        storageRoot,
-        consensus.teeProofIds[0] ?? '',
-        consensus.confidenceScore,
-        consensus.exploitsFound.length,
-        consensus.exploitsMitigated,
-      );
-      const receipt = await tx.wait();
-      logger.info('Review recorded on 0G Chain', { txHash: receipt.hash, prHash: consensus.prHash });
-      return receipt.hash as string;
-    } catch (err) {
-      logger.error('Failed to record review on chain', { err });
-      return null;
-    }
+    void consensus;
+    void storageRoot;
+    throw new Error('Direct 0G Chain writes are disabled. Use KeeperHubClient.recordReviewOnChain().');
   }
 
   async updateReputation(agentAddress: string, wasAccurate: boolean): Promise<string | null> {
-    if (!this.reputation) return null;
-    try {
-      const tx = await this.reputation.updateReputation(agentAddress, wasAccurate);
-      const receipt = await tx.wait();
-      return receipt.hash as string;
-    } catch (err) {
-      logger.error('Failed to update reputation', { err, agentAddress });
-      return null;
-    }
+    void agentAddress;
+    void wasAccurate;
+    throw new Error('Direct 0G Chain writes are disabled. Use KeeperHubClient.updateReputation().');
   }
 
   async mintAgentINFT(
@@ -126,23 +94,11 @@ export class OGChainClient {
     metadataHash: string,
     role: string
   ): Promise<{ tokenId: number; txHash: string } | null> {
-    if (!this.inft) return null;
-    try {
-      const hashBytes = ethers.hexlify(ethers.toUtf8Bytes(metadataHash)).padEnd(66, '0').slice(0, 66);
-      const tx = await this.inft.mintAgent(toAddress, encryptedURI, hashBytes, role);
-      const receipt = await tx.wait();
-      const event = receipt.logs
-        .map((log: ethers.Log) => {
-          try { return this.inft!.interface.parseLog(log); } catch { return null; }
-        })
-        .find((e: ethers.LogDescription | null) => e?.name === 'AgentMinted');
-      const tokenId = event ? Number(event.args[0]) : 0;
-      logger.info('Agent iNFT minted', { tokenId, role, txHash: receipt.hash });
-      return { tokenId, txHash: receipt.hash as string };
-    } catch (err) {
-      logger.error('Failed to mint agent iNFT', { err, role });
-      return null;
-    }
+    void toAddress;
+    void encryptedURI;
+    void metadataHash;
+    void role;
+    throw new Error('Direct iNFT minting is disabled. Use KeeperHubClient.mintAgentINFT().');
   }
 
   async evolveAgentINFT(
@@ -150,17 +106,10 @@ export class OGChainClient {
     newEncryptedURI: string,
     newMetadataHash: string
   ): Promise<string | null> {
-    if (!this.inft) return null;
-    try {
-      const hashBytes = ethers.hexlify(ethers.toUtf8Bytes(newMetadataHash)).padEnd(66, '0').slice(0, 66);
-      const tx = await this.inft.evolveAgent(tokenId, newEncryptedURI, hashBytes);
-      const receipt = await tx.wait();
-      logger.info('Agent iNFT evolved', { tokenId, txHash: receipt.hash });
-      return receipt.hash as string;
-    } catch (err) {
-      logger.error('Failed to evolve iNFT', { err, tokenId });
-      return null;
-    }
+    void tokenId;
+    void newEncryptedURI;
+    void newMetadataHash;
+    throw new Error('Direct iNFT evolution is disabled. Use KeeperHubClient.evolveAgentINFT().');
   }
 
   async getReputationScore(agentAddress: string): Promise<number> {

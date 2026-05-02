@@ -282,7 +282,7 @@ export class KeeperHubClient {
       label: `Record review: ${consensus.prHash.slice(0, 16)}`,
       contractAddress: registryAddress,
       methodName: 'recordReview',
-      methodAbi: 'function recordReview(bytes32 prHash, address[] calldata reviewerAgents, bool approved, string calldata storageRoot, string calldata teeProofId, uint256 confidenceScore) external',
+      methodAbi: 'function recordReview(bytes32 prHash, address[] calldata reviewerAgents, bool approved, string calldata storageRoot, string calldata teeProofId, uint256 confidenceScore, uint256 exploitsFound, uint256 exploitsMitigated) external',
       args: [
         prHashBytes,
         agentAddresses,
@@ -290,6 +290,8 @@ export class KeeperHubClient {
         storageRoot,
         consensus.teeProofIds[0] ?? '',
         consensus.confidenceScore,
+        consensus.exploitsFound.length,
+        consensus.exploitsMitigated,
       ],
     });
 

@@ -4,10 +4,10 @@ import { GossipSub, GOSSIP_TOPICS } from '../axl/gossipsub.js';
 import { ConsensusEngine } from './consensus.js';
 import { GitHubClient } from '../integrations/github.js';
 import { OGStorageClient } from '../integrations/og-storage.js';
-import { OGChainClient } from '../integrations/og-chain.js';
 import { KeeperHubClient } from '../integrations/keeperhub.js';
 import { SyncEngine } from '../offline/sync.js';
 import { globalTEERegistry } from '../integrations/og-tee-attestation.js';
+import { enforceAutoMergeGuardrails } from './guardrails.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { emitMeshEvent } from '../dashboard/server.js';
@@ -32,7 +32,6 @@ export class ReviewPipeline {
   private consensus = new ConsensusEngine();
   private github: GitHubClient;
   private storage: OGStorageClient;
-  private chain: OGChainClient;
   private keeperhub: KeeperHubClient;
 
   // Track which PRs are awaiting human review
@@ -47,14 +46,12 @@ export class ReviewPipeline {
   ) {
     this.github = new GitHubClient();
     this.storage = new OGStorageClient();
-    this.chain = new OGChainClient();
     this.keeperhub = new KeeperHubClient();
   }
 
   async initialize(): Promise<void> {
     await Promise.all([
       this.storage.initialize(),
-      this.chain.initialize(),
       this.keeperhub.initialize(),
     ]);
 
@@ -71,8 +68,9 @@ export class ReviewPipeline {
     this.syncEngine.registerExecutor('og-chain-record-review', async action => {
       const consensus = action.payload['consensus'] as ConsensusResult;
       const storageRoot = action.payload['storageRoot'] as string;
-      if (config.og.registryAddress) {
-        await this.chain.recordReview(consensus, storageRoot);
+      const registryAddress = String(action.payload['registryAddress'] ?? config.og.registryAddress ?? '');
+      if (registryAddress) {
+        await this.keeperhub.recordReviewOnChain(consensus, storageRoot, registryAddress);
       }
     });
 
@@ -81,6 +79,17 @@ export class ReviewPipeline {
         action.payload['consensus'] as ConsensusResult,
         action.payload['storageRoot'] as string,
         String(action.payload['registryAddress'])
+      );
+    });
+
+    this.syncEngine.registerExecutor('github-request-changes', async action => {
+      await this.github.requestChanges(
+        String(action.payload['owner']),
+        String(action.payload['repo']),
+        Number(action.payload['prNumber']),
+        String(action.payload['commitSha']),
+        action.payload['blockingIssues'] as ReviewFinding[],
+        String(action.payload['body'])
       );
     });
 
@@ -303,7 +312,9 @@ export class ReviewPipeline {
 
     const commitSha = pr.files[0] ? pr.prHash : 'HEAD';
 
-    if (consensusResult.approved) {
+    const guardrail = enforceAutoMergeGuardrails(consensusResult);
+
+    if (guardrail.allowed) {
       // Merge the PR
       const mergeMsg = [
         `Merged by ADVERSA (confidence: ${(consensusResult.confidenceScore / 100).toFixed(1)}%)`,
@@ -322,39 +333,40 @@ export class ReviewPipeline {
       emitMeshEvent('github-action', { action: 'merged', prNumber: pr.number, queued: mergeResult === 'queued', prHash });
     } else {
       // Request changes with inline comments
-      await this.github.requestChanges(
-        pr.repoOwner,
-        pr.repoName,
-        pr.number,
-        commitSha,
-        consensusResult.blockingIssues,
-        `ADVERSA Review: ${consensusResult.blockingIssues.length} blocking issue(s) found. ` +
+      const reviewBody = `ADVERSA Review: ${consensusResult.blockingIssues.length} blocking issue(s) found. ` +
         `Confidence: ${(consensusResult.confidenceScore / 100).toFixed(1)}%. ` +
-        `Exploits: ${exploits.length} found, ${consensusResult.exploitsMitigated} mitigated.`
-      );
+        `Exploits: ${exploits.length} found, ${consensusResult.exploitsMitigated} mitigated.`;
+
+      const changesResult = await this.syncEngine.executeOrQueue('github-request-changes', {
+        owner: pr.repoOwner,
+        repo: pr.repoName,
+        prNumber: pr.number,
+        commitSha,
+        blockingIssues: consensusResult.blockingIssues as unknown as Record<string, unknown>[],
+        body: reviewBody,
+      });
       githubAction = 'rejected';
-      emitMeshEvent('github-action', { action: 'rejected', prNumber: pr.number, prHash });
+      emitMeshEvent('github-action', {
+        action: 'rejected',
+        prNumber: pr.number,
+        queued: changesResult === 'queued',
+        prHash,
+      });
     }
 
-    // Record on 0G Chain. Try immediately to capture the txHash; if it fails
-    // (null return from OGChainClient means contract call failed), queue for
-    // automatic retry via the offline sync engine.
+    // Record on 0G Chain through KeeperHub only. The sync engine queues this
+    // workflow while offline and KeeperHub handles transaction retry semantics.
     if (config.og.registryAddress) {
-      const realTxHash = await this.chain.recordReview(consensusResult, storageUpload.rootHash);
-      if (realTxHash) {
-        txHash = realTxHash;
-        emitMeshEvent('chain-tx', { action: 'review-recorded', txHash: realTxHash, prHash, approved: consensusResult.approved });
-        logger.info('Review recorded on 0G Chain', { txHash: realTxHash, prHash: prHash.slice(0, 12) });
-      } else {
-        // recordReview returned null — RPC failure or contract revert.
-        // Queue for retry so the on-chain record is not permanently lost.
-        logger.warn('Chain recording failed — queuing for retry via sync engine', { prHash: prHash.slice(0, 12) });
-        await this.syncEngine.executeOrQueue('og-chain-record-review', {
-          consensus: consensusResult as unknown as Record<string, unknown>,
-          storageRoot: storageUpload.rootHash,
-        });
-        emitMeshEvent('chain-tx', { action: 'review-queued', prHash, approved: consensusResult.approved });
-      }
+      const recordResult = await this.syncEngine.executeOrQueue('keeperhub-workflow', {
+        consensus: consensusResult as unknown as Record<string, unknown>,
+        storageRoot: storageUpload.rootHash,
+        registryAddress: config.og.registryAddress,
+      });
+      emitMeshEvent('chain-tx', {
+        action: recordResult === 'queued' ? 'review-queued' : 'review-workflow-submitted',
+        prHash,
+        approved: consensusResult.approved,
+      });
     }
 
     logger.info('Pipeline complete', {

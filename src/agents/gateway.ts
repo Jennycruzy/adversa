@@ -8,7 +8,14 @@ import { GitHubClient } from '../integrations/github.js';
 import { OfflineQueue } from '../offline/queue.js';
 import { SyncEngine } from '../offline/sync.js';
 import { ConnectivityDetector } from '../offline/detector.js';
-import { startDashboardServer, emitMeshEvent, registerGoalHandler, registerTeeProviderLister, registerTriggerReviewHandler } from '../dashboard/server.js';
+import {
+  startDashboardServer,
+  emitMeshEvent,
+  registerGoalHandler,
+  registerTeeProviderLister,
+  registerTriggerReviewHandler,
+  registerOfflineModeHandler,
+} from '../dashboard/server.js';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
@@ -61,6 +68,9 @@ export class GatewayAgent extends BaseAgent {
 
     // Initialize sync engine
     this.syncEngine = new SyncEngine(this.queue, this.detector);
+
+    registerOfflineModeHandler(enabled => this.detector.setForcedOffline(enabled));
+
     this.pipeline = new ReviewPipeline(
       this.axl,
       this.topology,

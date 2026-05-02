@@ -4,6 +4,7 @@ import { ExploitAttempt, ReviewFinding, PRContext, DebateMessage } from '../type
 import { GossipSub, GOSSIP_TOPICS } from '../axl/gossipsub.js';
 import { logger } from '../utils/logger.js';
 import { emitMeshEvent } from '../dashboard/server.js';
+import { buildExploitChallenge } from '../review/debate.js';
 import { v4 as uuidv4 } from 'uuid';
 
 interface DebateOutcome {
@@ -320,14 +321,10 @@ Generate every exploit you can find. Be specific. Include actual payloads. Retur
     debateMessages.push(challengeMsg);
 
     // Send exploit challenge via A2A
-    const response = await this.axl.callA2A(targetPeerId, {
-      type: 'a2a_call',
-      payload: {
-        type: 'exploit_challenge',
-        exploit,
-        request_id: challengeMsg.requestId,
-      },
-    });
+    const response = await this.axl.callA2A(
+      targetPeerId,
+      buildExploitChallenge(exploit, challengeMsg.requestId)
+    );
 
     const defensePayload = (response['payload'] ?? response) as Record<string, unknown>;
     const mitigated = defensePayload['mitigated'] as boolean ?? false;
@@ -428,14 +425,13 @@ Return JSON: { "bypass": "new attack payload", "bypasses": boolean, "reasoning":
 
     // Send counter-attack and get final defense
     try {
-      const finalResponse = await this.axl.callA2A(targetPeerId, {
-        type: 'a2a_call',
-        payload: {
-          type: 'exploit_challenge',
-          exploit: { ...originalExploit, payload: counterAttack.bypass, title: `[BYPASS] ${originalExploit.title}` },
-          request_id: originalRequestId,
-        },
-      });
+      const finalResponse = await this.axl.callA2A(
+        targetPeerId,
+        buildExploitChallenge(
+          { ...originalExploit, payload: counterAttack.bypass, title: `[BYPASS] ${originalExploit.title}` },
+          originalRequestId
+        )
+      );
 
       const finalPayload = (finalResponse['payload'] ?? finalResponse) as Record<string, unknown>;
       const finalMsg: DebateMessage = {

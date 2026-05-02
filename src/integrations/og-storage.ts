@@ -1,4 +1,7 @@
 import { ethers } from 'ethers';
+import { writeFile, unlink } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 
@@ -68,22 +71,28 @@ export class OGStorageClient {
 
     const { ZgFile } = await import('@0gfoundation/0g-ts-sdk');
     const jsonBytes = Buffer.from(JSON.stringify(data, null, 2));
-    const blob = new Blob([jsonBytes], { type: 'application/json' });
+    const tempPath = join(tmpdir(), `adversa-og-storage-${crypto.randomUUID()}.json`);
 
-    // ZgFile accepts a Blob-like object; the type differs from Node.js File
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const file = new ZgFile(blob as any);
-    const [tree, treeErr] = await file.merkleTree();
-    if (treeErr || !tree) throw treeErr ?? new Error('0G Storage merkleTree returned null');
+    let tx: string | null = null;
+    let rootHash: string | null = null;
+    try {
+      await writeFile(tempPath, jsonBytes, { mode: 0o600 });
+      const file = await ZgFile.fromFilePath(tempPath);
+      const [tree, treeErr] = await file.merkleTree();
+      if (treeErr || !tree) throw treeErr ?? new Error('0G Storage merkleTree returned null');
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rootHash = (tree as any).rootHash() as string;
+      rootHash = tree.rootHash();
+      if (!rootHash) throw new Error('0G Storage merkle tree returned empty root hash');
 
-    const idx = this.indexer as {
-      upload: (file: unknown, rpcUrl: string, signer: ethers.Wallet) => Promise<[string | null, Error | null]>;
-    };
-    const [tx, uploadErr] = await idx.upload(file, config.og.rpcUrl!, this.signer);
-    if (uploadErr) throw uploadErr;
+      const idx = this.indexer as {
+        upload: (file: unknown, rpcUrl: string, signer: ethers.Wallet) => Promise<[string | null, Error | null]>;
+      };
+      const [uploadTx, uploadErr] = await idx.upload(file, config.og.rpcUrl!, this.signer);
+      if (uploadErr) throw uploadErr;
+      tx = uploadTx;
+    } finally {
+      await unlink(tempPath).catch(() => undefined);
+    }
 
     const result: StorageUploadResult = {
       rootHash,

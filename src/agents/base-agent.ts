@@ -60,6 +60,7 @@ export abstract class BaseAgent {
     this.gossip.subscribe(GOSSIP_TOPICS.HEARTBEAT, (from, data) => {
       if (from !== this.peerId) {
         const hb = data as unknown as HeartbeatPayload;
+        this.topology.updatePeerRole(hb.peerId || from, hb.role);
         logger.debug('Heartbeat from peer', { from: from.slice(0, 12), role: hb.role });
       }
     });
@@ -92,7 +93,7 @@ export abstract class BaseAgent {
   }
 
   private startHeartbeat(): void {
-    setInterval(async () => {
+    const publishHeartbeat = async () => {
       const heartbeat: HeartbeatPayload = {
         peerId: this.peerId,
         role: this.role,
@@ -108,6 +109,11 @@ export abstract class BaseAgent {
       } catch (err) {
         logger.debug('Heartbeat publish failed', { err });
       }
+    };
+
+    publishHeartbeat().catch(err => logger.debug('Initial heartbeat publish failed', { err }));
+    setInterval(() => {
+      publishHeartbeat().catch(err => logger.debug('Heartbeat publish failed', { err }));
     }, 15000);
   }
 
