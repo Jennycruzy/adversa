@@ -571,6 +571,27 @@ html, body {
   box-shadow: 0 0 20px rgba(239,68,68,0.1), inset 0 0 20px rgba(239,68,68,0.05);
 }
 .consensus-verdict.hidden { display: none; }
+.reject-reasons {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+.reject-reason {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--red-l);
+  opacity: 0.85;
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ─── Terminal Feed (Debate) ─────────────────────────────────────────────── */
 .terminal-feed {

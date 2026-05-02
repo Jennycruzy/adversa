@@ -52,11 +52,14 @@ socket.on('pipeline-start',    d => { S.currentPhase = 0; S.votes = {}; renderPh
 socket.on('pipeline-phase',    d => { S.currentPhase = d.phase; renderPhases(); });
 socket.on('pipeline-complete', d => {
   S.currentPhase = 7; renderPhases();
-  showVerdict(d.approved, d.confidenceScore);
+  showVerdict(d.approved, d.confidenceScore, d.blockingIssues);
   if (d.txHash) txToast(d.txHash, d.action);
   const badge = d.approved ? '<span class="badge badge-green">APPROVED</span>' : '<span class="badge badge-red">REJECTED</span>';
   el('pipeline-status').innerHTML = badge;
   if (d.exploitsFound) { S.stats.exploits += d.exploitsFound; animStat('stat-exploits', S.stats.exploits); }
+  if (!d.approved && d.rejectionReason) {
+    addMsg({ fromRole: 'gateway', type: 'reject', content: `Rejected: ${d.rejectionReason}`, ts: Date.now(), conf: Math.round((d.confidenceScore||0)/100) });
+  }
 });
 socket.on('pipeline-error', d => {
   el('pipeline-status').innerHTML = '<span class="badge badge-red">Error</span>';
@@ -79,7 +82,8 @@ socket.on('offline-status', d => { S.offlineMode = !d.online; syncOffline(); });
 socket.on('action-queued',  d => { S.queueLength = d.queueLength; syncOffline(); addMsg({ fromRole: 'gateway', type: 'queue', content: `Queued: ${d.actionType} (${d.queueLength} total)`, ts: Date.now() }); });
 socket.on('action-synced',  d => { S.queueLength = d.remaining; syncOffline(); });
 socket.on('sync-complete',  d => { S.queueLength = 0; syncOffline(); addMsg({ fromRole: 'gateway', type: 'sync', content: `Sync complete — ${d.completed} actions replayed`, ts: Date.now() }); });
-socket.on('chain-tx',       d => { txToast(d.txHash, d.action); addMsg({ fromRole: 'gateway', type: 'chain-tx', content: `On-chain: ${d.action} — ${d.txHash?.slice(0,20)}...`, ts: Date.now() }); });
+socket.on('chain-tx',       d => { txToast(d.txHash, d.action); addMsg({ fromRole: 'gateway', type: 'chain-tx', content: `On-chain: ${d.action}${d.storageRoot ? ' · 0G root: ' + d.storageRoot.slice(0,20) + '…' : ''}`, ts: Date.now() }); });
+socket.on('storage-proof',  d => { addMsg({ fromRole: 'gateway', type: 'storage', content: `0G Storage: ${d.approved ? 'approved' : 'rejected'} review stored · root: ${(d.rootHash||'').slice(0,24)}…${d.txHash ? ' · tx: ' + d.txHash.slice(0,16) + '…' : ''}`, ts: Date.now(), conf: 100 }); });
 socket.on('inft-update',    d => { const a = Object.values(S.agents).find(x=>x.role===d.role); if(a) a.evolutionCount=(a.evolutionCount||0)+1; refreshAgents(); addMsg({ fromRole: d.role, type: 'inft', content: `iNFT ${d.action}: ${d.role} agent (evolution #${d.version||'?'})`, ts: Date.now() }); });
 socket.on('human-detected', d => addMsg({ fromRole: 'human', type: 'human', content: `Human detected — auto-merge paused. ${d.reason||''}`, ts: Date.now() }));
 socket.on('goal-injected',  d => addMsg({ fromRole: d.source || 'dashboard', type: 'goal', content: `Goal: "${d.goal}"`, ts: d.timestamp }));
@@ -153,11 +157,19 @@ function clearVerdict() {
   const c = el('consensus-confidence'); if(c) c.textContent = '—';
 }
 
-function showVerdict(approved, score) {
+function showVerdict(approved, score, blockingIssues) {
   const r = el('consensus-result'); if (!r) return;
   const pct = ((score||0)/100).toFixed(1);
   r.className = `consensus-verdict ${approved ? 'approved' : 'rejected'}`;
-  r.innerHTML = `${approved ? '◉ APPROVED' : '✕ REJECTED'}<br><small style="font-size:11px;font-weight:400;letter-spacing:1px">${pct}% CONFIDENCE</small>`;
+  let html = `${approved ? '◉ APPROVED' : '✕ REJECTED'}<br><small style="font-size:11px;font-weight:400;letter-spacing:1px">${pct}% CONFIDENCE</small>`;
+  if (!approved && blockingIssues && blockingIssues.length > 0) {
+    const items = blockingIssues.slice(0, 5).map(f => {
+      const sevCls = f.severity === 'critical' ? 'crit' : 'medium';
+      return `<div class="reject-reason"><span class="chip ${sevCls}" style="font-size:9px">${f.severity.toUpperCase()}</span> ${esc(f.title)}</div>`;
+    }).join('');
+    html += `<div class="reject-reasons">${items}</div>`;
+  }
+  r.innerHTML = html;
   const c = el('consensus-confidence'); if(c) c.textContent = `${pct}%`;
 }
 
@@ -195,6 +207,7 @@ function addMsg(msg) {
     sync: '↺ SYNC',                'chain-tx': '⛓ CHAIN',
     inft: '◈ iNFT',                human: '◎ HUMAN',
     goal: '▸ GOAL',                error: '✕ ERROR',
+    storage: '◎ 0G STORE',         reject: '✕ REJECTED',
   };
   const label = typeMap[msg.type] || msg.type || 'INFO';
   const time = new Date(msg.ts || Date.now()).toLocaleTimeString('en', { hour12: false });

@@ -193,6 +193,16 @@ export class GatewayAgent extends BaseAgent {
         storageRoot: result.storageRoot,
         exploitsFound: result.consensus.exploitsFound.length,
         exploitsMitigated: result.consensus.exploitsMitigated,
+        blockingIssues: result.consensus.blockingIssues.map(f => ({
+          title: f.title,
+          severity: f.severity,
+          description: f.description,
+        })),
+        rejectionReason: !result.consensus.approved
+          ? (result.consensus.blockingIssues.length > 0
+              ? result.consensus.blockingIssues.map(f => f.title).join('; ')
+              : 'Consensus threshold not met')
+          : undefined,
       });
 
     } catch (err) {

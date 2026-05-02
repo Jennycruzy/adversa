@@ -296,6 +296,15 @@ export class ReviewPipeline {
     });
     consensusResult.storageRoot = storageUpload.rootHash;
 
+    // Always emit storage proof — even on rejection, so the dashboard can link
+    // to the 0G explorer entry for this review.
+    emitMeshEvent('storage-proof', {
+      prHash,
+      rootHash: storageUpload.rootHash,
+      txHash: storageUpload.txHash ?? null,
+      approved: consensusResult.approved,
+    });
+
     // Also upload debate transcript
     if (allDebates.length > 0) {
       await this.storage.uploadDebateTranscript({
@@ -366,6 +375,7 @@ export class ReviewPipeline {
         action: recordResult === 'queued' ? 'review-queued' : 'review-workflow-submitted',
         prHash,
         approved: consensusResult.approved,
+        storageRoot: storageUpload.rootHash,
       });
     }
 
