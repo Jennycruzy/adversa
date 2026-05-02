@@ -578,6 +578,14 @@ async function triggerReview() {
   } catch(e) { alert('Failed: ' + e.message); }
 }
 
+async function promptReviewPR() {
+  const prUrl = window.prompt('Paste a GitHub PR URL to review');
+  if (!prUrl || !prUrl.trim()) return;
+  try {
+    await post('/api/trigger-review', { prUrl: prUrl.trim() });
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
 async function castVote(verdict) {
   try {
     await post('/api/vote', { verdict, reason: 'Judge advisory vote' });

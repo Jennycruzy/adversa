@@ -105,7 +105,7 @@ export class GatewayAgent extends BaseAgent {
     // Start GitHub webhook server
     this.startWebhookServer();
 
-    logger.info('Gateway agent ready', { peerId: this.peerId.slice(0, 12) });
+    logger.info('Gateway agent ready', { peerId: (this.peerId || '').slice(0, 12) });
   }
 
   private startWebhookServer(): void {

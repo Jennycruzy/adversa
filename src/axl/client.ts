@@ -125,25 +125,45 @@ export class AXLClient {
   }> {
     const res = await this.fetchWithRetry(`${this.baseUrl}/topology`, { method: 'GET' }, retries, delayMs);
     const body = await res.json() as {
-      self_peer_id: string;
-      peers: Array<{
-        peer_id: string;
+      self_peer_id?: string;
+      selfPeerId?: string;
+      our_public_key?: string;
+      ourPublicKey?: string;
+      peers?: Array<{
+        peer_id?: string;
+        peerId?: string;
         address: string;
         online: boolean;
         services?: string[];
         agent_role?: string;
+        agentRole?: string;
         latency_ms?: number;
+        latencyMs?: number;
+      }>;
+      tree?: Array<{
+        public_key?: string;
+        publicKey?: string;
       }>;
     };
+
+    const selfPeerId =
+      body.self_peer_id ??
+      body.selfPeerId ??
+      body.our_public_key ??
+      body.ourPublicKey ??
+      body.tree?.[0]?.public_key ??
+      body.tree?.[0]?.publicKey ??
+      '';
+
     return {
-      selfPeerId: body.self_peer_id,
+      selfPeerId,
       peers: (body.peers ?? []).map(p => ({
-        peerId: p.peer_id,
+        peerId: p.peer_id ?? p.peerId ?? '',
         address: p.address,
         online: p.online,
         services: p.services ?? [],
-        agentRole: p.agent_role,
-        latencyMs: p.latency_ms,
+        agentRole: p.agent_role ?? p.agentRole,
+        latencyMs: p.latency_ms ?? p.latencyMs,
       })),
     };
   }

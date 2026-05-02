@@ -105,13 +105,11 @@ html, body {
 .header-left { display: flex; align-items: center; gap: 14px; flex-shrink: 0; }
 .header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
+.header-action-btn,
 .offline-header-btn {
   min-height: var(--touch);
   padding: 0 12px;
   border-radius: var(--r);
-  border: 1px solid rgba(239,68,68,0.45);
-  background: rgba(239,68,68,0.16);
-  color: var(--red-l);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 700;
@@ -120,11 +118,22 @@ html, body {
   cursor: pointer;
   white-space: nowrap;
 }
+.header-action-btn.review {
+  border: 1px solid rgba(6,182,212,0.45);
+  background: rgba(6,182,212,0.14);
+  color: var(--cyan-l);
+}
+.offline-header-btn {
+  border: 1px solid rgba(239,68,68,0.45);
+  background: rgba(239,68,68,0.16);
+  color: var(--red-l);
+}
 .offline-header-btn.online {
   border-color: rgba(16,185,129,0.45);
   background: rgba(16,185,129,0.14);
   color: var(--green-l);
 }
+.header-action-btn:active,
 .offline-header-btn:active { transform: scale(0.97); }
 
 /* Logo */
@@ -304,6 +313,7 @@ html, body {
   .stats-bar { display: none; }
   .header { padding: 0 10px; gap: 8px; }
   .logo-sub, .status-pill { display: none; }
+  .header-action-btn,
   .offline-header-btn { padding: 0 10px; font-size: 9px; }
   .connectivity-badge { font-size: 10px; }
 }

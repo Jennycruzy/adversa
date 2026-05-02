@@ -17,6 +17,10 @@ export abstract class BaseAgent {
   protected currentStatus: 'idle' | 'reviewing' | 'debating' | 'generating' = 'idle';
   protected inftTokenId?: number;
 
+  private peerLabel(peerId?: string): string {
+    return peerId && peerId.length > 0 ? peerId.slice(0, 12) : 'unknown';
+  }
+
   constructor(protected readonly role: AgentRole) {
     this.axl = new AXLClient(config.axl.nodePort, config.axl.nodeHost);
     this.gossip = new GossipSub(this.axl);
@@ -28,7 +32,7 @@ export abstract class BaseAgent {
     logger.info('Starting agent', { role: this.role });
 
     this.peerId = await this.axl.initialize();
-    logger.info('AXL peer initialized', { peerId: this.peerId.slice(0, 12), role: this.role });
+    logger.info('AXL peer initialized', { peerId: this.peerLabel(this.peerId), role: this.role });
 
     // Wire up event emitter for topology
     this.topology.setEventEmitter((event, data) => emitMeshEvent(event, data));
@@ -46,7 +50,7 @@ export abstract class BaseAgent {
 
     await this.onStart();
 
-    logger.info('Agent started', { role: this.role, peerId: this.peerId.slice(0, 12) });
+    logger.info('Agent started', { role: this.role, peerId: this.peerLabel(this.peerId) });
     emitMeshEvent('agent-online', { peerId: this.peerId, role: this.role, status: 'idle' });
   }
 

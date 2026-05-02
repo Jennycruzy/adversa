@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import { writeFile, unlink } from 'fs/promises';
+import { writeFile, unlink, open } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { config } from '../config.js';
@@ -75,31 +75,45 @@ export class OGStorageClient {
 
     let tx: string | null = null;
     let rootHash: string | null = null;
+    let fileHandle: Awaited<ReturnType<typeof open>> | null = null;
     try {
       await writeFile(tempPath, jsonBytes, { mode: 0o600 });
-      const file = await ZgFile.fromFilePath(tempPath);
-      const [tree, treeErr] = await file.merkleTree();
-      if (treeErr || !tree) throw treeErr ?? new Error('0G Storage merkleTree returned null');
-
-      rootHash = tree.rootHash();
-      if (!rootHash) throw new Error('0G Storage merkle tree returned empty root hash');
+      fileHandle = await open(tempPath, 'r');
+      const file = await ZgFile.fromNodeFileHandle(fileHandle);
 
       const idx = this.indexer as {
-        upload: (file: unknown, rpcUrl: string, signer: ethers.Wallet) => Promise<[string | null, Error | null]>;
+        upload: (
+          file: unknown,
+          rpcUrl: string,
+          signer: ethers.Wallet
+        ) => Promise<[{
+          txHash: string;
+          rootHash: string;
+          txSeq: number;
+        } | null, Error | null]>;
       };
-      const [uploadTx, uploadErr] = await idx.upload(file, config.og.rpcUrl!, this.signer);
+      const [uploadResult, uploadErr] = await idx.upload(file, config.og.rpcUrl!, this.signer);
       if (uploadErr) throw uploadErr;
-      tx = uploadTx;
+      if (!uploadResult) {
+        throw new Error('0G Storage upload returned no result');
+      }
+      tx = uploadResult.txHash || null;
+      rootHash = uploadResult.rootHash || null;
+      if (!rootHash) throw new Error('0G Storage merkle tree returned empty root hash');
     } finally {
+      if (fileHandle) {
+        await fileHandle.close().catch(() => undefined);
+      }
       await unlink(tempPath).catch(() => undefined);
     }
 
+    const finalRootHash = rootHash;
     const result: StorageUploadResult = {
-      rootHash,
+      rootHash: finalRootHash,
       txHash: tx != null ? tx : undefined,
-      url: `0g-storage://${rootHash}`,
+      url: `0g-storage://${finalRootHash}`,
     };
-    logger.info('0G Storage upload complete', { rootHash, txHash: tx });
+    logger.info('0G Storage upload complete', { rootHash: finalRootHash, txHash: tx });
     return result;
   }
 
