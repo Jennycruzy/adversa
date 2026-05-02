@@ -27,9 +27,10 @@ const ConfigSchema = z.object({
     reputationAddress: z.string().optional(),
     inftAddress: z.string().optional(),
     deployerPrivateKey: z.string().optional(),
-    // 0G Compute contract addresses (0G testnet chain 16602 defaults)
-    ledgerContractAddress: z.string().default('0x815B93ab4Ba4BDF530dbF1552649a3c534F8BbF7'),
-    inferenceContractAddress: z.string().default('0x41bD7Ac5c19000A974D5c192bcd5FB67b56C85c5'),
+    // 0G Compute contract addresses — SDK v2.0.0 testnet defaults.
+    // Override via OG_LEDGER_CONTRACT_ADDRESS / OG_INFERENCE_CONTRACT_ADDRESS.
+    ledgerContractAddress: z.string().default('0x0c0D02e4E849C711B2388A829366B5bf3f9c53e7'),
+    inferenceContractAddress: z.string().default('0x46e8a02d609CaEfC1747197da1F38272d5E46c77'),
     // Ledger management (A0GI units)
     ledgerInitialBalance: z.number().optional(),
     ledgerDepositAmount: z.number().optional(),
