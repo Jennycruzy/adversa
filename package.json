@@ -23,8 +23,8 @@
     "demo": "bash scripts/demo.sh"
   },
   "dependencies": {
+    "@0gfoundation/0g-compute-ts-sdk": "0.8.0",
     "@0gfoundation/0g-ts-sdk": "^1.2.8",
-    "@0glabs/0g-serving-broker": "^2.0.0",
     "@octokit/rest": "^20.1.1",
     "@octokit/webhooks": "^13.3.0",
     "cors": "^2.8.5",

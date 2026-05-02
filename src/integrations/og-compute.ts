@@ -42,7 +42,7 @@ interface ServiceMetadata {
  *     chatID   = the ZG-Res-Key header value (optional, auto-fetched if omitted)
  */
 export class OGComputeClient {
-  private broker: import('@0glabs/0g-serving-broker').ZGComputeNetworkBroker | null = null;
+  private broker: import('@0gfoundation/0g-compute-ts-sdk').ZGComputeNetworkBroker | null = null;
   private wallet: ethers.Wallet | null = null;
   private providerAddress = '';
   private serviceMetadata: ServiceMetadata | null = null;
@@ -68,7 +68,7 @@ export class OGComputeClient {
       const provider = new ethers.JsonRpcProvider(config.og.rpcUrl);
       this.wallet = new ethers.Wallet(config.og.privateKey, provider);
 
-      const { createZGComputeNetworkBroker } = await import('@0glabs/0g-serving-broker');
+      const { createZGComputeNetworkBroker } = await import('@0gfoundation/0g-compute-ts-sdk');
       // Pass contract addresses only when explicitly configured; otherwise let
       // the SDK resolve its own defaults for the connected chain (Galileo testnet).
       this.broker = await createZGComputeNetworkBroker(
@@ -101,9 +101,8 @@ export class OGComputeClient {
   /**
    * Ensure the caller's ledger exists and has funds.
    *
-   * LedgerBroker.getLedger() returns LedgerDetailStructOutput with:
-   *   ledgerInfo: bigint[]  — packed struct; index 1 = availableBalance in neuron
-   *   infers: [provider, balance, pending][]
+   * LedgerBroker.getLedger() returns LedgerStructOutput with:
+   *   availableBalance: bigint  — available balance in neuron (1e18 per A0GI)
    *
    * Creates a ledger with OG_LEDGER_INITIAL_BALANCE A0GI if none exists.
    * Tops up by OG_LEDGER_DEPOSIT_AMOUNT A0GI if availableBalance is below threshold.
@@ -117,11 +116,7 @@ export class OGComputeClient {
 
     try {
       const detail = await this.broker.ledger.getLedger();
-      // ledgerInfo is the ABI-decoded Ledger struct as a bigint array:
-      // [0]=user (as bigint address), [1]=availableBalance, [2]=totalBalance, ...
-      const availableNeuron: bigint = Array.isArray(detail.ledgerInfo)
-        ? (detail.ledgerInfo[1] ?? 0n)
-        : 0n;
+      const availableNeuron: bigint = detail.availableBalance ?? 0n;
       const balanceA0GI = Number(availableNeuron) / 1e18;
       logger.debug('0G Compute ledger balance', { balanceA0GI });
 
@@ -183,7 +178,8 @@ export class OGComputeClient {
     // Intel TDX hardware with a valid DCAP attestation quote.
     let serviceVerified: boolean | null = null;
     try {
-      serviceVerified = await this.broker.inference.verifyService(providerAddress);
+      const verifyResult = await this.broker.inference.verifyService(providerAddress);
+      serviceVerified = verifyResult?.success ?? null;
       if (serviceVerified === false) {
         logger.warn('0G Compute: provider TEE attestation FAILED verification', { providerAddress });
       } else if (serviceVerified === true) {
@@ -286,16 +282,15 @@ export class OGComputeClient {
     const responseText = data.choices[0]?.message?.content ?? '';
 
     // Verify TEE attestation:
-    //   processResponse(providerAddress, responseContent, chatId?)
-    //   - responseContent: the text the provider returned (what was signed by TEE key)
-    //   - chatId: links to the downloadable signature for this specific response
+    //   processResponse(providerAddress, chatId?, content?)
+    //   SDK v0.8+: chatId is 2nd param, content is 3rd
     //   Returns true if the response signature is valid against the verified TEE signing key
     let isValid: boolean | null = null;
     try {
       isValid = await this.broker!.inference.processResponse(
         this.providerAddress,
-        responseText,
         chatId,
+        responseText,
       );
     } catch (err) {
       logger.warn('0G Compute TEE response verification failed', { err, chatId });
@@ -350,11 +345,11 @@ export class OGComputeClient {
   }> {
     if (!this.broker) return { verified: null, signerRaLink: '' };
     const addr = providerAddress ?? this.providerAddress;
-    const [verified, link] = await Promise.all([
+    const [verifyResult, link] = await Promise.all([
       this.broker.inference.verifyService(addr).catch(() => null),
       this.broker.inference.getSignerRaDownloadLink(addr).catch(() => ''),
     ]);
-    return { verified, signerRaLink: link };
+    return { verified: verifyResult?.success ?? null, signerRaLink: link };
   }
 
   /** List all inference providers currently registered on-chain with their TEE verifiability type */
