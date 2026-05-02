@@ -47,6 +47,7 @@ services:
   # Image: https://docs.keeperhub.com/ai-tools/mcp-server
   keeperhub-mcp:
     image: keeperhub/mcp:latest
+    profiles: [mcp]
     restart: unless-stopped
     networks:
       adversa-mesh:
@@ -158,8 +159,6 @@ services:
     depends_on:
       axl-gateway:
         condition: service_healthy
-      keeperhub-mcp:
-        condition: service_started
     ports:
       - "3001:3001"
       - "3002:3002"
