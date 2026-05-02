@@ -194,15 +194,47 @@ export class AXLClient {
   }
 
   // ─── GossipSub ────────────────────────────────────────────────────────────────
+  //
+  // The real AXL binary exposes core endpoints: /send /recv /topology /mcp/ /a2a/
+  // GossipSub is implemented here as an application-level protocol on top of
+  // raw /send and /recv, with a try-first on native /gossip/* endpoints in case
+  // the binary version running locally exposes them.
+
+  /** Whether the native /gossip/* endpoints are available on this AXL node. Cached after first probe. */
+  private nativeGossipAvailable: boolean | null = null;
 
   async gossipPublish(topic: string, data: Record<string, unknown>): Promise<void> {
-    const encoded = Buffer.from(JSON.stringify(data)).toString('base64');
-    await this.fetchWithRetry(`${this.baseUrl}/gossip/publish`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic, data: encoded }),
-    });
-    logger.debug('AXL gossip publish', { topic });
+    // Try native gossip endpoint first (probe once and cache the result)
+    if (this.nativeGossipAvailable !== false) {
+      try {
+        const encoded = Buffer.from(JSON.stringify(data)).toString('base64');
+        await this.fetchWithRetry(`${this.baseUrl}/gossip/publish`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic, data: encoded }),
+        }, 0);  // no retries for probe
+        this.nativeGossipAvailable = true;
+        logger.debug('AXL gossip publish (native)', { topic });
+        return;
+      } catch {
+        this.nativeGossipAvailable = false;
+        logger.debug('AXL native gossip not available — using application-level broadcast', { topic });
+      }
+    }
+
+    // Application-level gossip: broadcast to all online peers via /send
+    // Envelope format: { _gossip: true, _topic: topic, ...data }
+    try {
+      const topo = await this.getTopology();
+      const onlinePeers = topo.peers.filter(p => p.online && p.peerId !== this.selfPeerId);
+      const payload: Record<string, unknown> = { _gossip: true, _topic: topic, ...data };
+      await Promise.allSettled(
+        onlinePeers.map(p => this.send(p.peerId, payload).catch(() => {/* ignore per-peer send errors */}))
+      );
+      logger.debug('AXL gossip publish (app-level broadcast)', { topic, peerCount: onlinePeers.length });
+    } catch (err) {
+      logger.warn('AXL gossip publish failed', { topic, err });
+    }
   }
 
   async gossipReceive(topic: string): Promise<Array<{
@@ -210,38 +242,102 @@ export class AXLClient {
     data: Record<string, unknown>;
     timestamp: number;
   }>> {
-    const res = await this.fetchWithRetry(
-      `${this.baseUrl}/gossip/messages/${encodeURIComponent(topic)}`,
-      { method: 'GET' }
-    );
-    const body = await res.json() as {
-      messages?: Array<{ from: string; data: string; timestamp: number }>;
-    };
-    return (body.messages ?? []).map(m => ({
-      from: m.from,
-      data: JSON.parse(Buffer.from(m.data, 'base64').toString('utf8')) as Record<string, unknown>,
-      timestamp: m.timestamp,
-    }));
+    // Try native gossip endpoint first
+    if (this.nativeGossipAvailable !== false) {
+      try {
+        const res = await this.fetchWithRetry(
+          `${this.baseUrl}/gossip/messages/${encodeURIComponent(topic)}`,
+          { method: 'GET' },
+          0,  // no retries for probe
+        );
+        const body = await res.json() as {
+          messages?: Array<{ from: string; data: string; timestamp: number }>;
+        };
+        this.nativeGossipAvailable = true;
+        return (body.messages ?? []).map(m => ({
+          from: m.from,
+          data: JSON.parse(Buffer.from(m.data, 'base64').toString('utf8')) as Record<string, unknown>,
+          timestamp: m.timestamp,
+        }));
+      } catch {
+        this.nativeGossipAvailable = false;
+      }
+    }
+
+    // Application-level: pull from /recv and filter by topic envelope
+    // Note: this drains ALL pending messages so GossipSub should be the only
+    // consumer of /recv, or the caller must handle message routing.
+    const messages = await this.recv();
+    return messages
+      .filter(m => m.data['_gossip'] === true && m.data['_topic'] === topic)
+      .map(m => {
+        // Strip envelope fields before returning
+        const { _gossip: _g, _topic: _t, ...rest } = m.data;
+        return { from: m.from, data: rest, timestamp: m.timestamp };
+      });
   }
 
   // ─── Convergecast ─────────────────────────────────────────────────────────────
+  //
+  // Application-level convergecast: each participant sends its data to the
+  // gateway via /send, the gateway collects and aggregates.
+  // Native /convergecast endpoint is tried first.
 
   async convergecast(
     topic: string,
     data: Record<string, unknown>,
     aggregationFn: 'sum' | 'max' | 'min' | 'collect' = 'collect'
   ): Promise<{ aggregated: unknown; contributorCount: number }> {
-    const encoded = Buffer.from(JSON.stringify(data)).toString('base64');
-    const res = await this.fetchWithRetry(`${this.baseUrl}/convergecast`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic, data: encoded, aggregation_fn: aggregationFn }),
-    });
-    const result = await res.json() as { aggregated: string; contributor_count: number };
-    return {
-      aggregated: JSON.parse(Buffer.from(result.aggregated, 'base64').toString('utf8')),
-      contributorCount: result.contributor_count,
-    };
+    // Try native convergecast endpoint first
+    try {
+      const encoded = Buffer.from(JSON.stringify(data)).toString('base64');
+      const res = await this.fetchWithRetry(`${this.baseUrl}/convergecast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic, data: encoded, aggregation_fn: aggregationFn }),
+      }, 0);
+      const result = await res.json() as { aggregated: string; contributor_count: number };
+      return {
+        aggregated: JSON.parse(Buffer.from(result.aggregated, 'base64').toString('utf8')),
+        contributorCount: result.contributor_count,
+      };
+    } catch {
+      // Fall through to application-level aggregation
+    }
+
+    // Application-level convergecast: collect any contributions that have
+    // already arrived via /recv (agents send their data directly), then
+    // include our own data as well. In the ADVERSA pipeline, votes are
+    // primarily collected as MCP response bodies; this handles any additional
+    // direct-send contributions.
+    const messages = await this.recv();
+    const contributions = messages
+      .filter(m => m.data['_convergecast'] === true && m.data['_topic'] === topic)
+      .map(m => {
+        const { _convergecast: _c, _topic: _t, _aggregation: _a, ...rest } = m.data;
+        return rest;
+      });
+
+    contributions.push({ ...data }); // include caller's own data point
+
+    let aggregated: unknown;
+    if (aggregationFn === 'collect') {
+      aggregated = contributions;
+    } else if (aggregationFn === 'sum') {
+      aggregated = contributions.reduce((acc, c) => {
+        const val = typeof c['value'] === 'number' ? c['value'] : 0;
+        return (acc as number) + val;
+      }, 0);
+    } else if (aggregationFn === 'max') {
+      aggregated = contributions.reduce((acc, c) => {
+        const val = typeof c['value'] === 'number' ? c['value'] : -Infinity;
+        return Math.max(acc as number, val);
+      }, -Infinity);
+    } else {
+      aggregated = contributions;
+    }
+
+    return { aggregated, contributorCount: contributions.length };
   }
 
   // ─── Polling ─────────────────────────────────────────────────────────────────

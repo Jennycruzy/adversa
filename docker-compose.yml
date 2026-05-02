@@ -35,9 +35,34 @@ x-agent-base: &agent-base
   environment:
     LOG_LEVEL: info
     AXL_NODE_PORT: "9002"
-    KEEPERHUB_MCP_API_KEY: ""   # force mock mode — no external keeperhub-mcp image needed
+    # KeeperHub MCP server runs as a dedicated service in this compose stack.
+    # KEEPERHUB_MCP_URL overrides .env so agents reach the container, not localhost.
+    KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
 
 services:
+
+  # ─── KeeperHub MCP Server ────────────────────────────────────────────────────
+  # Provides AI-friendly MCP tools: create_workflow, execute_workflow, etc.
+  # Bridges to the KeeperHub REST API at https://app.keeperhub.com/api
+  # Image: https://docs.keeperhub.com/ai-tools/mcp-server
+  keeperhub-mcp:
+    image: keeperhub/mcp:latest
+    restart: unless-stopped
+    networks:
+      adversa-mesh:
+        ipv4_address: 172.20.0.5
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      KEEPERHUB_API_KEY: "${KEEPERHUB_API_KEY}"
+      MCP_API_KEY: "${KEEPERHUB_MCP_API_KEY}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ─── AXL Mesh Brokers (one per agent) ────────────────────────────────────────
 
@@ -129,10 +154,12 @@ services:
       AXL_NODE_PORT: "9002"
       DASHBOARD_PORT: "3001"
       DASHBOARD_HOST: "0.0.0.0"
-      KEEPERHUB_MCP_API_KEY: ""
+      KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
     depends_on:
       axl-gateway:
         condition: service_healthy
+      keeperhub-mcp:
+        condition: service_started
     ports:
       - "3001:3001"
       - "3002:3002"
@@ -148,7 +175,7 @@ services:
       AGENT_ROLE: security
       AXL_NODE_HOST: axl-security
       AXL_NODE_PORT: "9002"
-      KEEPERHUB_MCP_API_KEY: ""
+      KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
     depends_on:
       - axl-security
       - axl-gateway
@@ -162,7 +189,7 @@ services:
       AGENT_ROLE: performance
       AXL_NODE_HOST: axl-performance
       AXL_NODE_PORT: "9002"
-      KEEPERHUB_MCP_API_KEY: ""
+      KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
     depends_on:
       - axl-performance
       - axl-gateway
@@ -176,7 +203,7 @@ services:
       AGENT_ROLE: style
       AXL_NODE_HOST: axl-style
       AXL_NODE_PORT: "9002"
-      KEEPERHUB_MCP_API_KEY: ""
+      KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
     depends_on:
       - axl-style
       - axl-gateway
@@ -190,7 +217,7 @@ services:
       AGENT_ROLE: redteam
       AXL_NODE_HOST: axl-redteam
       AXL_NODE_PORT: "9002"
-      KEEPERHUB_MCP_API_KEY: ""
+      KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
     depends_on:
       - axl-redteam
       - axl-gateway
@@ -204,7 +231,7 @@ services:
       AGENT_ROLE: coder
       AXL_NODE_HOST: axl-coder
       AXL_NODE_PORT: "9002"
-      KEEPERHUB_MCP_API_KEY: ""
+      KEEPERHUB_MCP_URL: "http://keeperhub-mcp:3000"
     depends_on:
       - axl-coder
       - axl-gateway
