@@ -336,13 +336,24 @@ export class ReviewPipeline {
       emitMeshEvent('github-action', { action: 'rejected', prNumber: pr.number, prHash });
     }
 
-    // Record directly on 0G Chain via AdversaRegistry contract
+    // Record on 0G Chain. Try immediately to capture the txHash; if it fails
+    // (null return from OGChainClient means contract call failed), queue for
+    // automatic retry via the offline sync engine.
     if (config.og.registryAddress) {
       const realTxHash = await this.chain.recordReview(consensusResult, storageUpload.rootHash);
       if (realTxHash) {
         txHash = realTxHash;
         emitMeshEvent('chain-tx', { action: 'review-recorded', txHash: realTxHash, prHash, approved: consensusResult.approved });
         logger.info('Review recorded on 0G Chain', { txHash: realTxHash, prHash: prHash.slice(0, 12) });
+      } else {
+        // recordReview returned null — RPC failure or contract revert.
+        // Queue for retry so the on-chain record is not permanently lost.
+        logger.warn('Chain recording failed — queuing for retry via sync engine', { prHash: prHash.slice(0, 12) });
+        await this.syncEngine.executeOrQueue('og-chain-record-review', {
+          consensus: consensusResult as unknown as Record<string, unknown>,
+          storageRoot: storageUpload.rootHash,
+        });
+        emitMeshEvent('chain-tx', { action: 'review-queued', prHash, approved: consensusResult.approved });
       }
     }
 

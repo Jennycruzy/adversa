@@ -27,6 +27,9 @@ const ConfigSchema = z.object({
     reputationAddress: z.string().optional(),
     inftAddress: z.string().optional(),
     deployerPrivateKey: z.string().optional(),
+    // 0G Compute contract addresses (0G testnet chain 16602 defaults)
+    ledgerContractAddress: z.string().default('0x815B93ab4Ba4BDF530dbF1552649a3c534F8BbF7'),
+    inferenceContractAddress: z.string().default('0x41bD7Ac5c19000A974D5c192bcd5FB67b56C85c5'),
     // Ledger management (A0GI units)
     ledgerInitialBalance: z.number().optional(),
     ledgerDepositAmount: z.number().optional(),
@@ -81,6 +84,8 @@ function loadConfig(): Config {
       reputationAddress: process.env.ADVERSA_REPUTATION_ADDRESS,
       inftAddress: process.env.ADVERSA_INFT_ADDRESS,
       deployerPrivateKey: process.env.DEPLOYER_PRIVATE_KEY,
+      ledgerContractAddress: process.env.OG_LEDGER_CONTRACT_ADDRESS,
+      inferenceContractAddress: process.env.OG_INFERENCE_CONTRACT_ADDRESS,
       ledgerInitialBalance: process.env.OG_LEDGER_INITIAL_BALANCE
         ? parseFloat(process.env.OG_LEDGER_INITIAL_BALANCE)
         : undefined,

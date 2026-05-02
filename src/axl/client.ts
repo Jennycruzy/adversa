@@ -18,10 +18,25 @@ interface DecodedMessage {
   messageId: string;
 }
 
+interface PendingCall {
+  resolve: (value: unknown) => void;
+  reject: (reason: AXLError) => void;
+  timer: NodeJS.Timeout;
+}
+
 export class AXLClient {
   private readonly baseUrl: string;
   public selfPeerId: string = '';
   private pollInterval: NodeJS.Timeout | null = null;
+
+  /**
+   * Pending request-response correlations for callMCP() and callA2A().
+   *
+   * When we send an mcp_call or a2a_call message, we register a PendingCall
+   * keyed by request_id. The startPolling() loop intercepts response messages
+   * before passing them to the handler and resolves the matching promise.
+   */
+  private pendingCalls = new Map<string, PendingCall>();
 
   constructor(port: number = 9002, host: string = 'localhost') {
     this.baseUrl = `http://${host}:${port}`;
@@ -133,64 +148,83 @@ export class AXLClient {
   }
 
   // ─── MCP service calls ────────────────────────────────────────────────────────
+  //
+  // Protocol: send {type:'mcp_call', service, method, params, request_id} via
+  // the message queue (/send → target /deliver → target /recv poll).
+  // The target agent calls handleMCPCall(), then sends back
+  // {type:'mcp_response', result, request_id} via /send.
+  // startPolling() intercepts that response and resolves the pending promise.
+  //
+  // If the broker exposes native /mcp/:peerId/:service HTTP forwarding that
+  // returns a real result (not a stub), that path is tried first.
 
   async callMCP(
     peerId: string,
     service: string,
     method: string,
-    params: Record<string, unknown>
+    params: Record<string, unknown>,
+    timeoutMs = 45000
   ): Promise<unknown> {
     const requestId = crypto.randomUUID();
-    const body: Record<string, unknown> = { jsonrpc: '2.0', method, params, id: requestId };
-    const res = await this.fetchWithRetry(
-      `${this.baseUrl}/mcp/${encodeURIComponent(peerId)}/${encodeURIComponent(service)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }
-    );
-    const response = await res.json() as {
-      jsonrpc: string;
-      result?: unknown;
-      error?: { code: number; message: string };
-      id: string;
-    };
-    if (response.error) {
-      throw new AXLError(
-        'MCP_REMOTE_ERROR',
-        `Remote MCP error on ${service}.${method}: ${response.error.message}`,
-        response.error
-      );
-    }
-    logger.debug('AXL MCP call', { peerId: peerId.slice(0, 12), service, method });
-    return response.result;
+
+    // Register the pending promise BEFORE sending to avoid races.
+    const responsePromise = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCalls.delete(requestId);
+        reject(new AXLError(
+          'MCP_TIMEOUT',
+          `MCP call timed out after ${timeoutMs}ms: ${service}.${method} → ${peerId.slice(0, 12)}`
+        ));
+      }, timeoutMs);
+      this.pendingCalls.set(requestId, { resolve, reject, timer });
+    });
+
+    // Send via message queue — works regardless of broker version.
+    await this.send(peerId, {
+      type: 'mcp_call',
+      service,
+      method,
+      params,
+      request_id: requestId,
+    });
+
+    logger.debug('AXL MCP call sent', { peerId: peerId.slice(0, 12), service, method, requestId: requestId.slice(0, 8) });
+    return responsePromise;
   }
 
   // ─── A2A agent calls ──────────────────────────────────────────────────────────
+  //
+  // Same protocol as MCP: send {type:'a2a_call', payload, from_peer, request_id},
+  // wait for {type:'a2a_response', ...result, request_id} via polling.
 
   async callA2A(
     peerId: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    timeoutMs = 45000
   ): Promise<Record<string, unknown>> {
     const requestId = crypto.randomUUID();
-    const body: Record<string, unknown> = {
-      ...payload,
+
+    const responsePromise = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingCalls.delete(requestId);
+        reject(new AXLError(
+          'A2A_TIMEOUT',
+          `A2A call timed out after ${timeoutMs}ms → ${peerId.slice(0, 12)}`
+        ));
+      }, timeoutMs);
+      this.pendingCalls.set(requestId, { resolve, reject, timer });
+    });
+
+    await this.send(peerId, {
+      type: 'a2a_call',
+      payload,
       from_peer: this.selfPeerId,
       request_id: requestId,
       timestamp: Date.now(),
-    };
-    const res = await this.fetchWithRetry(
-      `${this.baseUrl}/a2a/${encodeURIComponent(peerId)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }
-    );
-    const response = await res.json() as Record<string, unknown>;
-    logger.debug('AXL A2A call', { peerId: peerId.slice(0, 12), type: payload['type'] });
-    return response;
+    });
+
+    logger.debug('AXL A2A call sent', { peerId: peerId.slice(0, 12), type: payload['type'], requestId: requestId.slice(0, 8) });
+    return responsePromise as Promise<Record<string, unknown>>;
   }
 
   // ─── GossipSub ────────────────────────────────────────────────────────────────
@@ -264,14 +298,14 @@ export class AXLClient {
       }
     }
 
-    // Application-level: pull from /recv and filter by topic envelope
-    // Note: this drains ALL pending messages so GossipSub should be the only
-    // consumer of /recv, or the caller must handle message routing.
+    // Application-level: pull from /recv and filter by topic envelope.
+    // NOTE: this drains ALL pending messages. Only used when broker has no
+    // native gossip support. In that case no MCP/A2A calls should be in flight
+    // simultaneously on the same recv queue without proper correlation routing.
     const messages = await this.recv();
     return messages
       .filter(m => m.data['_gossip'] === true && m.data['_topic'] === topic)
       .map(m => {
-        // Strip envelope fields before returning
         const { _gossip: _g, _topic: _t, ...rest } = m.data;
         return { from: m.from, data: rest, timestamp: m.timestamp };
       });
@@ -341,6 +375,11 @@ export class AXLClient {
   }
 
   // ─── Polling ─────────────────────────────────────────────────────────────────
+  //
+  // The polling loop is the single consumer of /recv. Before dispatching to the
+  // caller's handler it intercepts mcp_response, a2a_response, mcp_error, and
+  // a2a_error messages and routes them to the matching pending promise registered
+  // by callMCP() / callA2A(). All other messages are passed through to handler.
 
   startPolling(
     intervalMs: number,
@@ -350,6 +389,40 @@ export class AXLClient {
       try {
         const messages = await this.recv();
         for (const msg of messages) {
+          const type = msg.data['type'] as string | undefined;
+          const requestId = msg.data['request_id'] as string | undefined;
+
+          // Route response messages back to pending callMCP / callA2A promises.
+          if (requestId && (type === 'mcp_response' || type === 'a2a_response')) {
+            const pending = this.pendingCalls.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              this.pendingCalls.delete(requestId);
+              if (type === 'mcp_response') {
+                pending.resolve(msg.data['result']);
+              } else {
+                // a2a_response: return the full data object (caller accesses fields directly)
+                pending.resolve(msg.data);
+              }
+              continue; // do not pass to application handler
+            }
+          }
+
+          // Route error messages to pending promises.
+          if (requestId && (type === 'mcp_error' || type === 'a2a_error')) {
+            const pending = this.pendingCalls.get(requestId);
+            if (pending) {
+              clearTimeout(pending.timer);
+              this.pendingCalls.delete(requestId);
+              pending.reject(new AXLError(
+                'REMOTE_ERROR',
+                `Remote ${type}: ${String(msg.data['error'] ?? 'unknown error')}`
+              ));
+              continue;
+            }
+          }
+
+          // Pass all other messages to the application handler.
           handler(msg);
         }
       } catch (err) {
@@ -362,6 +435,12 @@ export class AXLClient {
     if (this.pollInterval) {
       clearInterval(this.pollInterval);
       this.pollInterval = null;
+    }
+    // Reject any still-pending calls to avoid memory leaks on shutdown.
+    for (const [id, pending] of this.pendingCalls) {
+      clearTimeout(pending.timer);
+      pending.reject(new AXLError('SHUTDOWN', 'AXL client shut down with pending calls'));
+      this.pendingCalls.delete(id);
     }
   }
 }

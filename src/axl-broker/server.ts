@@ -12,7 +12,7 @@
  *   POST /deliver                    — receive from another broker (internal)
  *   POST /a2a/:peerId                — agent-to-agent call (forwarded)
  *   POST /a2a-recv                   — receive A2A call (internal)
- *   POST /mcp/:peerId/:service       — MCP call (forwarded)
+ *   POST /mcp/:peerId/:service       — MCP call (forwarded via /deliver)
  *   POST /gossip/publish             — fan-out to all peers
  *   POST /gossip/receive             — receive gossip (internal)
  *   GET  /gossip/messages/:topic     — drain gossip queue for topic
@@ -23,14 +23,40 @@
  */
 
 import express, { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
+import { randomBytes, createHash, randomUUID } from 'crypto';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import path from 'path';
 
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 
 const ROLE = process.env.AGENT_ROLE ?? 'gateway';
 const PORT = parseInt(process.env.AXL_NODE_PORT ?? '9002');
-const SELF_PEER_ID = `${ROLE}-${randomUUID().slice(0, 8)}`;
+
+// ─── Stable peer ID ───────────────────────────────────────────────────────────
+//
+// The peer ID must survive container restarts so topology bookkeeping in
+// other brokers stays consistent. We derive it from a 32-byte seed stored
+// in AXL_PRIVATE_KEY_PATH. On first boot the seed is generated and persisted;
+// subsequent starts load the same seed, producing the same peer ID.
+
+function loadOrCreateNodeSeed(keyPath: string): string {
+  const dir = path.dirname(keyPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (existsSync(keyPath)) {
+    const seed = readFileSync(keyPath, 'utf8').trim();
+    if (seed.length >= 32) return seed;
+  }
+  const seed = randomBytes(32).toString('hex');
+  writeFileSync(keyPath, seed, { mode: 0o600 });
+  return seed;
+}
+
+const KEY_PATH = process.env.AXL_PRIVATE_KEY_PATH ?? './keys/peer-id.key';
+const nodeSeed = loadOrCreateNodeSeed(KEY_PATH);
+const SELF_PEER_ID = `${ROLE}-${createHash('sha256').update(nodeSeed).digest('hex').slice(0, 16)}`;
+
+// ─── State ────────────────────────────────────────────────────────────────────
 
 interface PeerInfo {
   peerId: string;
@@ -49,7 +75,12 @@ interface Message {
 
 const peers = new Map<string, PeerInfo>();
 const inboundQueue: Message[] = [];
+// gossipQueues: topic → messages; cap at 500 per topic
 const gossipQueues = new Map<string, Array<{ from: string; data: string; timestamp: number }>>();
+// seen gossip fingerprints for deduplication (from:topic:ts)
+const seenGossip = new Set<string>();
+const GOSSIP_DEDUP_TTL_MS = 30_000;
+const GOSSIP_QUEUE_MAX = 500;
 
 // ─── Peer setup ──────────────────────────────────────────────────────────────
 
@@ -150,13 +181,18 @@ app.post('/send', async (req: Request, res: Response) => {
 });
 
 // ─── A2A ──────────────────────────────────────────────────────────────────────
+//
+// A2A calls are fully message-based: the caller sends an a2a_call message via
+// /send, then polls /recv for the a2a_response (correlated by request_id).
+// The /a2a/:peerId HTTP endpoint is kept for compatibility but simply delivers
+// the call as a message and returns an acknowledgment — the real response
+// arrives asynchronously through the message queue.
 
 app.post('/a2a/:peerId', async (req: Request, res: Response) => {
   const { peerId } = req.params;
   const peer = Array.from(peers.values()).find(p => p.peerId === peerId);
 
   if (!peer) {
-    // Self or unknown — echo ack
     res.json({
       type: 'a2a_response',
       from_peer: SELF_PEER_ID,
@@ -179,7 +215,6 @@ app.post('/a2a/:peerId', async (req: Request, res: Response) => {
 });
 
 app.post('/a2a-recv', (req: Request, res: Response) => {
-  // Deliver to local queue so the agent can pick it up via /recv
   const body = req.body as Record<string, unknown>;
   inboundQueue.push({
     from: (body['from_peer'] as string | undefined) ?? 'unknown',
@@ -196,6 +231,11 @@ app.post('/a2a-recv', (req: Request, res: Response) => {
 });
 
 // ─── MCP forwarding ───────────────────────────────────────────────────────────
+//
+// /mcp/:peerId/:service delivers the call as a message into the target broker's
+// inbound queue. The target agent picks it up via /recv, calls handleMCPCall(),
+// and sends the response back via /send (which delivers to the caller's queue).
+// The caller's AXLClient.startPolling() intercepts the mcp_response by request_id.
 
 app.post('/mcp/:peerId/:service', async (req: Request, res: Response) => {
   const { peerId, service } = req.params;
@@ -210,40 +250,66 @@ app.post('/mcp/:peerId/:service', async (req: Request, res: Response) => {
     return;
   }
 
+  // Wrap the JSON-RPC body as an mcp_call message and deliver it
+  const body = req.body as { method?: string; params?: Record<string, unknown>; id?: string };
+  const message: Message = {
+    from: SELF_PEER_ID,
+    data: Buffer.from(JSON.stringify({
+      type: 'mcp_call',
+      service,
+      method: body.method ?? service,
+      params: body.params ?? {},
+      request_id: body.id ?? randomUUID(),
+    })).toString('base64'),
+    timestamp: Date.now(),
+    message_id: randomUUID(),
+  };
+
   try {
-    const upstream = await fetchPeer(peer.address, `/mcp-serve/${service}`, req.body);
-    const data = await (upstream as unknown as { json(): Promise<unknown> }).json();
-    res.json(data);
+    await fetchPeer(peer.address, '/deliver', message);
+    peer.online = true;
+    peer.lastSeen = Date.now();
+    // ACK — caller polls /recv for the actual mcp_response keyed by request_id
+    res.json({ jsonrpc: '2.0', result: { status: 'queued' }, id: body.id });
   } catch {
+    peer.online = false;
     res.status(503).json({
       jsonrpc: '2.0',
       error: { code: -32000, message: 'Peer unreachable' },
-      id: (req.body as { id?: string }).id,
+      id: body.id,
     });
   }
 });
 
-app.post('/mcp-serve/:service', (req: Request, res: Response) => {
-  res.json({
-    jsonrpc: '2.0',
-    result: { status: 'ok', service: req.params.service, role: ROLE },
-    id: (req.body as { id?: string }).id,
-  });
-});
-
 // ─── GossipSub ────────────────────────────────────────────────────────────────
+
+function gossipFingerprint(from: string, topic: string, timestamp: number): string {
+  return `${from}:${topic}:${timestamp}`;
+}
+
+function enqueueGossip(topic: string, msg: { from: string; data: string; timestamp: number }): void {
+  const fp = gossipFingerprint(msg.from, topic, msg.timestamp);
+  if (seenGossip.has(fp)) return; // deduplicate
+  seenGossip.add(fp);
+  // Evict old fingerprints to bound memory
+  if (seenGossip.size > 5000) {
+    const first = seenGossip.values().next().value;
+    if (first !== undefined) seenGossip.delete(first);
+  }
+  const queue = gossipQueues.get(topic) ?? [];
+  queue.push(msg);
+  if (queue.length > GOSSIP_QUEUE_MAX) queue.shift();
+  gossipQueues.set(topic, queue);
+  // Schedule fingerprint expiry
+  setTimeout(() => seenGossip.delete(fp), GOSSIP_DEDUP_TTL_MS);
+}
 
 app.post('/gossip/publish', async (req: Request, res: Response) => {
   const { topic, data } = req.body as { topic: string; data: string };
   const msg = { from: SELF_PEER_ID, data, timestamp: Date.now() };
 
-  // Store locally
-  const queue = gossipQueues.get(topic) ?? [];
-  queue.push(msg);
-  if (queue.length > 200) queue.shift();
-  gossipQueues.set(topic, queue);
+  enqueueGossip(topic, msg);
 
-  // Fan-out
   const fanout = Array.from(peers.values()).map(peer =>
     fetchPeer(peer.address, '/gossip/receive', { topic, ...msg }).then(r => {
       if (r) { peer.online = true; peer.lastSeen = Date.now(); }
@@ -257,10 +323,7 @@ app.post('/gossip/receive', (req: Request, res: Response) => {
   const { topic, from, data, timestamp } = req.body as {
     topic: string; from: string; data: string; timestamp: number;
   };
-  const queue = gossipQueues.get(topic) ?? [];
-  queue.push({ from, data, timestamp });
-  if (queue.length > 200) queue.shift();
-  gossipQueues.set(topic, queue);
+  enqueueGossip(topic, { from, data, timestamp });
   res.json({ success: true });
 });
 
@@ -317,6 +380,7 @@ parsePeers();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[AXL:${ROLE}] broker running on :${PORT} — peer_id=${SELF_PEER_ID}`);
+  console.log(`[AXL:${ROLE}] key: ${KEY_PATH}`);
   console.log(`[AXL:${ROLE}] known peers: ${Array.from(peers.keys()).join(', ') || 'none'}`);
 
   // Perform peer handshake after a short delay (let other containers start)

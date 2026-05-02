@@ -49,9 +49,10 @@ export class OGComputeClient {
   private initialized = false;
   private signerRaLink = '';
 
-  // Contract addresses for 0G testnet (chain 16602)
-  private static readonly LEDGER_CA = '0x815B93ab4Ba4BDF530dbF1552649a3c534F8BbF7';
-  private static readonly INFERENCE_CA = '0x41bD7Ac5c19000A974D5c192bcd5FB67b56C85c5';
+  // Contract addresses resolved from config (OG_LEDGER_CONTRACT_ADDRESS /
+  // OG_INFERENCE_CONTRACT_ADDRESS) with 0G testnet chain 16602 values as defaults.
+  private get LEDGER_CA(): string { return config.og.ledgerContractAddress; }
+  private get INFERENCE_CA(): string { return config.og.inferenceContractAddress; }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -69,8 +70,8 @@ export class OGComputeClient {
       const { createZGComputeNetworkBroker } = await import('@0glabs/0g-serving-broker');
       this.broker = await createZGComputeNetworkBroker(
         this.wallet,
-        OGComputeClient.LEDGER_CA,
-        OGComputeClient.INFERENCE_CA,
+        this.LEDGER_CA,
+        this.INFERENCE_CA,
       );
 
       await this.ensureLedger();

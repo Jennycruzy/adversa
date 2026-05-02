@@ -48,40 +48,44 @@ export class OGStorageClient {
     if (!this.initialized) await this.initialize();
 
     if (!this.indexer || !this.signer) {
+      // No credentials configured — dev/demo mode only.
+      if (config.og.privateKey) {
+        // Credentials were set but initialization failed. Don't return a fake
+        // storage URL that would get recorded on-chain as a real reference.
+        throw new Error(
+          '0G Storage unavailable: OG_PRIVATE_KEY is set but the client failed to initialize. ' +
+          'Check OG_RPC_URL and OG_STORAGE_INDEXER_URL connectivity.'
+        );
+      }
       return this.mockUpload(data);
     }
 
-    try {
-      const { ZgFile } = await import('@0gfoundation/0g-ts-sdk');
-      const jsonBytes = Buffer.from(JSON.stringify(data, null, 2));
-      const blob = new Blob([jsonBytes], { type: 'application/json' });
+    const { ZgFile } = await import('@0gfoundation/0g-ts-sdk');
+    const jsonBytes = Buffer.from(JSON.stringify(data, null, 2));
+    const blob = new Blob([jsonBytes], { type: 'application/json' });
 
-      // ZgFile accepts a Blob-like object; the type differs from Node.js File
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const file = new ZgFile(blob as any);
-      const [tree, treeErr] = await file.merkleTree();
-      if (treeErr || !tree) throw treeErr ?? new Error('merkleTree returned null');
+    // ZgFile accepts a Blob-like object; the type differs from Node.js File
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const file = new ZgFile(blob as any);
+    const [tree, treeErr] = await file.merkleTree();
+    if (treeErr || !tree) throw treeErr ?? new Error('0G Storage merkleTree returned null');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rootHash = (tree as any).rootHash() as string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rootHash = (tree as any).rootHash() as string;
 
-      const idx = this.indexer as {
-        upload: (file: unknown, rpcUrl: string, signer: ethers.Wallet) => Promise<[string | null, Error | null]>;
-      };
-      const [tx, uploadErr] = await idx.upload(file, config.og.rpcUrl, this.signer);
-      if (uploadErr) throw uploadErr;
+    const idx = this.indexer as {
+      upload: (file: unknown, rpcUrl: string, signer: ethers.Wallet) => Promise<[string | null, Error | null]>;
+    };
+    const [tx, uploadErr] = await idx.upload(file, config.og.rpcUrl, this.signer);
+    if (uploadErr) throw uploadErr;
 
-      const result: StorageUploadResult = {
-        rootHash,
-        txHash: tx != null ? tx : undefined,
-        url: `0g-storage://${rootHash}`,
-      };
-      logger.info('0G Storage upload complete', { rootHash, txHash: tx });
-      return result;
-    } catch (err) {
-      logger.error('0G Storage upload failed', { err });
-      return this.mockUpload(data);
-    }
+    const result: StorageUploadResult = {
+      rootHash,
+      txHash: tx != null ? tx : undefined,
+      url: `0g-storage://${rootHash}`,
+    };
+    logger.info('0G Storage upload complete', { rootHash, txHash: tx });
+    return result;
   }
 
   async uploadDebateTranscript(transcript: {
