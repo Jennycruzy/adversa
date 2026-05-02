@@ -29,6 +29,12 @@ export class OGStorageClient {
       return;
     }
 
+    if (!config.og.rpcUrl || !config.og.storageIndexerUrl) {
+      logger.warn('OG_RPC_URL or OG_STORAGE_INDEXER_URL not set — 0G Storage in mock mode. Set to 0G Galileo testnet values to enable real storage.');
+      this.initialized = true;
+      return;
+    }
+
     try {
       const provider = new ethers.JsonRpcProvider(config.og.rpcUrl);
       this.signer = new ethers.Wallet(config.og.privateKey, provider);
@@ -76,7 +82,7 @@ export class OGStorageClient {
     const idx = this.indexer as {
       upload: (file: unknown, rpcUrl: string, signer: ethers.Wallet) => Promise<[string | null, Error | null]>;
     };
-    const [tx, uploadErr] = await idx.upload(file, config.og.rpcUrl, this.signer);
+    const [tx, uploadErr] = await idx.upload(file, config.og.rpcUrl!, this.signer);
     if (uploadErr) throw uploadErr;
 
     const result: StorageUploadResult = {

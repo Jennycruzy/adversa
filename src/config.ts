@@ -20,17 +20,19 @@ const ConfigSchema = z.object({
   }),
   og: z.object({
     privateKey: z.string().optional(),
-    rpcUrl: z.string().default('https://evmrpc-testnet.0g.ai'),
+    rpcUrl: z.string().optional(),
+    chainId: z.string().optional(),
     computeProviderAddress: z.string().optional(),
-    storageIndexerUrl: z.string().default('https://indexer-storage-testnet-turbo.0g.ai'),
+    storageIndexerUrl: z.string().optional(),
     registryAddress: z.string().optional(),
     reputationAddress: z.string().optional(),
     inftAddress: z.string().optional(),
     deployerPrivateKey: z.string().optional(),
-    // 0G Compute contract addresses — SDK v2.0.0 testnet defaults.
-    // Override via OG_LEDGER_CONTRACT_ADDRESS / OG_INFERENCE_CONTRACT_ADDRESS.
-    ledgerContractAddress: z.string().default('0x0c0D02e4E849C711B2388A829366B5bf3f9c53e7'),
-    inferenceContractAddress: z.string().default('0x46e8a02d609CaEfC1747197da1F38272d5E46c77'),
+    // 0G Compute contract addresses — optional.
+    // When not set the SDK resolves its own defaults for the connected chain.
+    // Only set these to override (e.g. custom deployment or network upgrade).
+    ledgerContractAddress: z.string().optional(),
+    inferenceContractAddress: z.string().optional(),
     // Ledger management (A0GI units)
     ledgerInitialBalance: z.number().optional(),
     ledgerDepositAmount: z.number().optional(),
@@ -78,9 +80,10 @@ function loadConfig(): Config {
     },
     og: {
       privateKey: process.env.OG_PRIVATE_KEY,
-      rpcUrl: process.env.OG_RPC_URL ?? 'https://evmrpc-testnet.0g.ai',
+      rpcUrl: process.env.OG_RPC_URL,
+      chainId: process.env.OG_CHAIN_ID,
       computeProviderAddress: process.env.OG_COMPUTE_PROVIDER_ADDRESS,
-      storageIndexerUrl: process.env.OG_STORAGE_INDEXER_URL ?? 'https://indexer-storage-testnet-turbo.0g.ai',
+      storageIndexerUrl: process.env.OG_STORAGE_INDEXER_URL,
       registryAddress: process.env.ADVERSA_REGISTRY_ADDRESS,
       reputationAddress: process.env.ADVERSA_REPUTATION_ADDRESS,
       inftAddress: process.env.ADVERSA_INFT_ADDRESS,

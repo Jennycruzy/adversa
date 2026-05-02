@@ -11,7 +11,7 @@ export class ConnectivityDetector {
   private checkTargets = [
     config.og.rpcUrl,
     'https://api.github.com',
-  ];
+  ].filter((u): u is string => Boolean(u));
 
   onStatusChange(handler: ConnectivityHandler): void {
     this.handlers.push(handler);

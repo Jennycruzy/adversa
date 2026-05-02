@@ -234,7 +234,7 @@ export class KeeperHubClient {
     chainId?: number;
     rpcUrl?: string;
   }): Record<string, unknown> {
-    const chainId = String(params.chainId ?? 16602);
+    const chainId = String(params.chainId ?? config.og.chainId ?? '');
     return {
       trigger: {
         id: 'trigger-1',
@@ -402,7 +402,7 @@ export class KeeperHubClient {
             type: 'action',
             config: {
               actionType: 'web3/transfer-funds',
-              network: '16602',
+              network: config.og.chainId ?? '',
               rpcUrl: config.og.rpcUrl,
               from: fromAddress,
               to: toAddress,

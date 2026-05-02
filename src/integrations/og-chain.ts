@@ -42,6 +42,12 @@ export class OGChainClient {
       return;
     }
 
+    if (!config.og.rpcUrl) {
+      logger.warn('OG_RPC_URL not set — 0G Chain in mock mode. Set to 0G Galileo testnet RPC to enable on-chain recording.');
+      this.initialized = true;
+      return;
+    }
+
     try {
       this.provider = new ethers.JsonRpcProvider(config.og.rpcUrl);
       this.wallet = new ethers.Wallet(config.og.privateKey, this.provider);

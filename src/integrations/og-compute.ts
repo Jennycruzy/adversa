@@ -49,11 +49,6 @@ export class OGComputeClient {
   private initialized = false;
   private signerRaLink = '';
 
-  // Contract addresses resolved from config (OG_LEDGER_CONTRACT_ADDRESS /
-  // OG_INFERENCE_CONTRACT_ADDRESS) with 0G testnet chain 16602 values as defaults.
-  private get LEDGER_CA(): string { return config.og.ledgerContractAddress; }
-  private get INFERENCE_CA(): string { return config.og.inferenceContractAddress; }
-
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
@@ -63,15 +58,23 @@ export class OGComputeClient {
       return;
     }
 
+    if (!config.og.rpcUrl) {
+      logger.warn('OG_RPC_URL not set — using mock inference. Set to 0G Galileo testnet RPC to enable TEE inference.');
+      this.initialized = true;
+      return;
+    }
+
     try {
       const provider = new ethers.JsonRpcProvider(config.og.rpcUrl);
       this.wallet = new ethers.Wallet(config.og.privateKey, provider);
 
       const { createZGComputeNetworkBroker } = await import('@0glabs/0g-serving-broker');
+      // Pass contract addresses only when explicitly configured; otherwise let
+      // the SDK resolve its own defaults for the connected chain (Galileo testnet).
       this.broker = await createZGComputeNetworkBroker(
         this.wallet,
-        this.LEDGER_CA,
-        this.INFERENCE_CA,
+        config.og.ledgerContractAddress,
+        config.og.inferenceContractAddress,
       );
 
       await this.ensureLedger();
