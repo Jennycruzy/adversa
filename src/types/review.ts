@@ -99,6 +99,7 @@ export interface PRContext {
   repoOwner: string;
   repoName: string;
   prHash: string;
+  headSha: string;
   url: string;
 }
 

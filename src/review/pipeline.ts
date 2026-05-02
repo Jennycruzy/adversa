@@ -93,6 +93,25 @@ export class ReviewPipeline {
       );
     });
 
+    this.syncEngine.registerExecutor('github-close-pr', async action => {
+      await this.github.closePR(
+        String(action.payload['owner']),
+        String(action.payload['repo']),
+        Number(action.payload['prNumber']),
+        String(action.payload['comment'])
+      );
+    });
+
+    this.syncEngine.registerExecutor('github-approve-pr', async action => {
+      await this.github.approvePR(
+        String(action.payload['owner']),
+        String(action.payload['repo']),
+        Number(action.payload['prNumber']),
+        String(action.payload['commitSha']),
+        String(action.payload['body'])
+      );
+    });
+
     // Listen for human votes
     this.gossip.subscribe(GOSSIP_TOPICS.HUMAN_ACTIVITY, (from, data) => {
       const d = data as { type?: string; verdict?: 'approve' | 'reject'; prHash?: string; reason?: string };
@@ -319,17 +338,31 @@ export class ReviewPipeline {
     let githubAction: PipelineResult['githubAction'] = 'pending_human';
     let txHash: string | undefined;
 
-    const commitSha = pr.files[0] ? pr.prHash : 'HEAD';
-
+    const headSha = pr.headSha;
+    const confidencePct = (consensusResult.confidenceScore / 100).toFixed(1);
     const guardrail = enforceAutoMergeGuardrails(consensusResult);
 
     if (guardrail.allowed) {
-      // Merge the PR
+      // Post an APPROVE review first so judges can see the reason on GitHub
+      const approveBody = this.github.formatReviewBody(
+        allFindings,
+        `Confidence: ${confidencePct}% · Exploits found: ${exploits.length}, mitigated: ${consensusResult.exploitsMitigated} · 0G Storage root: \`${storageUpload.rootHash}\``,
+        true
+      );
+      await this.syncEngine.executeOrQueue('github-approve-pr', {
+        owner: pr.repoOwner,
+        repo: pr.repoName,
+        prNumber: pr.number,
+        commitSha: headSha,
+        body: approveBody,
+      });
+
+      // Then merge with a descriptive commit message
       const mergeMsg = [
-        `Merged by ADVERSA (confidence: ${(consensusResult.confidenceScore / 100).toFixed(1)}%)`,
+        `Merged by ADVERSA — confidence ${confidencePct}%`,
         `Exploits found: ${exploits.length}, mitigated: ${consensusResult.exploitsMitigated}`,
-        `Storage: ${storageUpload.rootHash}`,
-      ].join('\n');
+        `0G Storage: ${storageUpload.rootHash}`,
+      ].join('\n\n');
 
       const mergeResult = await this.syncEngine.executeOrQueue('github-merge', {
         owner: pr.repoOwner,
@@ -341,24 +374,52 @@ export class ReviewPipeline {
       githubAction = 'merged';
       emitMeshEvent('github-action', { action: 'merged', prNumber: pr.number, queued: mergeResult === 'queued', prHash });
     } else {
-      // Request changes with inline comments
-      const reviewBody = `ADVERSA Review: ${consensusResult.blockingIssues.length} blocking issue(s) found. ` +
-        `Confidence: ${(consensusResult.confidenceScore / 100).toFixed(1)}%. ` +
-        `Exploits: ${exploits.length} found, ${consensusResult.exploitsMitigated} mitigated.`;
-
-      const changesResult = await this.syncEngine.executeOrQueue('github-request-changes', {
+      // Post a REQUEST_CHANGES review with inline comments on every blocking issue
+      const reviewBody = this.github.formatReviewBody(
+        consensusResult.blockingIssues,
+        `Confidence: ${confidencePct}% · ${consensusResult.blockingIssues.length} blocking issue(s) · Exploits: ${exploits.length} found, ${consensusResult.exploitsMitigated} mitigated`,
+        false
+      );
+      await this.syncEngine.executeOrQueue('github-request-changes', {
         owner: pr.repoOwner,
         repo: pr.repoName,
         prNumber: pr.number,
-        commitSha,
+        commitSha: headSha,
         blockingIssues: consensusResult.blockingIssues as unknown as Record<string, unknown>[],
         body: reviewBody,
       });
+
+      // Close the PR and leave a comment explaining why
+      const blockingList = consensusResult.blockingIssues
+        .map(f => `- **[${f.severity.toUpperCase()}]** ${f.title}`)
+        .join('\n');
+      const closeComment = [
+        '## ❌ ADVERSA: PR Closed — Review Failed',
+        '',
+        `**Confidence:** ${confidencePct}%  |  **Blocking issues:** ${consensusResult.blockingIssues.length}  |  **Exploits:** ${exploits.length}`,
+        '',
+        '### Blocking Issues',
+        blockingList || '_No specific findings — consensus threshold not met._',
+        '',
+        `### On-Chain Proof`,
+        `- **0G Storage root:** \`${storageUpload.rootHash}\``,
+        `- **Review recorded via KeeperHub** on 0G Galileo testnet`,
+        '',
+        '*ADVERSA — Adversarial AI Code Review Swarm · AXL Mesh · 0G Compute TEE*',
+      ].join('\n');
+
+      await this.syncEngine.executeOrQueue('github-close-pr', {
+        owner: pr.repoOwner,
+        repo: pr.repoName,
+        prNumber: pr.number,
+        comment: closeComment,
+      });
+
       githubAction = 'rejected';
       emitMeshEvent('github-action', {
         action: 'rejected',
         prNumber: pr.number,
-        queued: changesResult === 'queued',
+        queued: false,
         prHash,
       });
     }

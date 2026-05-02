@@ -63,6 +63,7 @@ export class GitHubClient {
       repoOwner: owner,
       repoName: repo,
       prHash,
+      headSha: pr.data.head.sha,
       url: pr.data.html_url,
     };
   }
@@ -156,6 +157,18 @@ export class GitHubClient {
     logger.info('Approved PR', { owner, repo, prNumber });
   }
 
+  async closePR(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    comment: string
+  ): Promise<void> {
+    // Post the rejection comment first so it appears before the close event
+    await this.octokit.issues.createComment({ owner, repo, issue_number: prNumber, body: comment });
+    await this.octokit.pulls.update({ owner, repo, pull_number: prNumber, state: 'closed' });
+    logger.info('Closed PR', { owner, repo, prNumber });
+  }
+
   async mergePR(
     owner: string,
     repo: string,
@@ -245,7 +258,7 @@ export class GitHubClient {
     ].filter(Boolean).join('\n');
   }
 
-  private formatReviewBody(findings: ReviewFinding[], summary: string, approved: boolean): string {
+  formatReviewBody(findings: ReviewFinding[], summary: string, approved: boolean): string {
     const header = approved
       ? '## ✅ ADVERSA Review: APPROVED\n\n'
       : '## ❌ ADVERSA Review: CHANGES REQUESTED\n\n';

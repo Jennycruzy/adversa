@@ -8,6 +8,8 @@ export type QueuedActionType =
   | 'github-merge'
   | 'github-comment'
   | 'github-request-changes'
+  | 'github-close-pr'
+  | 'github-approve-pr'
   | 'og-storage-upload'
   | 'og-chain-record-review'
   | 'og-chain-update-reputation'
