@@ -177,9 +177,19 @@ export class ReviewPipeline {
       this.callMCPAgent(stylePeers[0], 'style-check', mcpPayload),
     ]);
 
-    const secFindings = this.extractFindings(securityResults);
+    let secFindings = this.extractFindings(securityResults);
     const perfFindings = this.extractFindings(perfResults);
     const styleFindings = this.extractFindings(styleResults);
+
+    // If no security agent was reachable (or it returned nothing), run the
+    // gateway's own heuristic scan so findings are always produced.
+    if (secFindings.length === 0) {
+      logger.info('Security agent unreachable — running gateway heuristic scan');
+      emitMeshEvent('pipeline-phase', { phase: 2, name: 'heuristic-fallback', prHash });
+      secFindings = this.gatewayHeuristicScan(pr.diff, pr.files.map(f => f.filename));
+      logger.info('Gateway heuristic scan complete', { findings: secFindings.length });
+    }
+
     const allFindings = [...secFindings, ...perfFindings, ...styleFindings];
 
     logger.info('Fan-out complete', {
@@ -244,8 +254,16 @@ export class ReviewPipeline {
     const votes: AgentVote[] = [];
 
     // Build votes from findings
-    if (securityPeers[0]) {
-      votes.push(this.buildVote(securityPeers[0], secFindings, 'security'));
+    // Use the real security peer if available; otherwise synthesise one so heuristic findings count
+    const secPeer = securityPeers[0] ?? {
+      peerId: 'gateway-heuristic',
+      role: 'security' as const,
+      online: true,
+      lastSeen: Date.now(),
+      reputationScore: 80,
+    };
+    if (secFindings.length > 0 || securityPeers[0]) {
+      votes.push(this.buildVote(secPeer, secFindings, 'security'));
     }
     if (performancePeers[0]) {
       votes.push(this.buildVote(performancePeers[0], perfFindings, 'performance'));
@@ -492,6 +510,126 @@ export class ReviewPipeline {
     };
 
     return result.findings ?? [];
+  }
+
+  /**
+   * Gateway-level heuristic scan used when no security agent is reachable over AXL.
+   * Covers the most impactful vulnerability patterns so the demo always produces findings.
+   */
+  private gatewayHeuristicScan(diff: string, files: string[]): ReviewFinding[] {
+    const findings: ReviewFinding[] = [];
+    const lines = diff.split('\n');
+
+    const rules: Array<{
+      pattern: RegExp;
+      severity: ReviewFinding['severity'];
+      title: string;
+      description: string;
+      recommendation: string;
+      cweId: string;
+      cvssScore: number;
+    }> = [
+      {
+        // exec( with any form of dynamic interpolation
+        pattern: /exec\s*\(.*?\$[\{\(]/,
+        severity: 'critical',
+        title: 'OS Command Injection',
+        description: 'User-controlled input is interpolated directly into a shell command string passed to exec(). An attacker can inject arbitrary OS commands by manipulating the input value.',
+        recommendation: 'Replace exec() with execFile() and pass arguments as an array. Never interpolate user input into shell command strings.',
+        cweId: 'CWE-78', cvssScore: 9.8,
+      },
+      {
+        pattern: /exec\s*\(\s*['"`][^'"`]*\$\{/,
+        severity: 'critical',
+        title: 'Command Injection via Template Literal',
+        description: 'Shell command constructed with a template literal containing dynamic values is passed to exec(). Attackers can inject shell metacharacters (`;`, `&&`, `|`) to run arbitrary commands.',
+        recommendation: 'Use execFile() with an argument array instead of exec() with a template string.',
+        cweId: 'CWE-78', cvssScore: 9.8,
+      },
+      {
+        pattern: /password\s*=\s*['"][^'"]{3,}['"]/i,
+        severity: 'critical',
+        title: 'Hardcoded Password',
+        description: 'A plaintext password is hardcoded in source code. Credentials in version control are trivially extractable.',
+        recommendation: 'Move credentials to environment variables or a secrets manager.',
+        cweId: 'CWE-259', cvssScore: 9.1,
+      },
+      {
+        pattern: /(api[_-]?key|secret[_-]?key|access[_-]?token)\s*=\s*['"][a-zA-Z0-9+/=_\-]{8,}['"]/i,
+        severity: 'critical',
+        title: 'Hardcoded API Key / Secret',
+        description: 'An API key or secret token is hardcoded in source code and will be exposed in version control history.',
+        recommendation: 'Store secrets in environment variables, AWS Secrets Manager, or Vault.',
+        cweId: 'CWE-798', cvssScore: 8.8,
+      },
+      {
+        pattern: /eval\s*\(/,
+        severity: 'high',
+        title: 'Use of eval()',
+        description: 'eval() executes arbitrary code strings. If any user input reaches it, this enables remote code execution.',
+        recommendation: 'Remove eval(). Use JSON.parse() for data or safer alternatives.',
+        cweId: 'CWE-95', cvssScore: 8.1,
+      },
+      {
+        pattern: /innerHTML\s*=\s*[^'"]/,
+        severity: 'high',
+        title: 'XSS via innerHTML Assignment',
+        description: 'Setting innerHTML with dynamic content enables stored or reflected XSS attacks.',
+        recommendation: 'Use textContent for plain text, or sanitize with DOMPurify before innerHTML.',
+        cweId: 'CWE-79', cvssScore: 7.4,
+      },
+      {
+        pattern: /(?:sql|query)\s*[=+].*\+\s*(?:req\.|params|body|query|input)/i,
+        severity: 'high',
+        title: 'SQL Injection via String Concatenation',
+        description: 'SQL query built by concatenating user-controlled input is vulnerable to injection attacks.',
+        recommendation: 'Use parameterized queries or a prepared statement API.',
+        cweId: 'CWE-89', cvssScore: 9.8,
+      },
+      {
+        pattern: /x-forwarded-for/i,
+        severity: 'high',
+        title: 'Spoofable IP via X-Forwarded-For Header',
+        description: 'X-Forwarded-For is a client-controlled header. Using it for rate limiting, access control, or audit logging allows attackers to spoof their IP address and bypass restrictions.',
+        recommendation: 'Use req.socket.remoteAddress (the actual TCP peer) for security decisions. Trust X-Forwarded-For only behind a verified proxy.',
+        cweId: 'CWE-348', cvssScore: 7.5,
+      },
+      {
+        pattern: /console\.log\(.*(?:password|token|secret|key)/i,
+        severity: 'medium',
+        title: 'Sensitive Data Logged to Console',
+        description: 'Credentials or secrets are being logged, exposing them in log aggregation systems.',
+        recommendation: 'Remove or redact sensitive fields before logging.',
+        cweId: 'CWE-532', cvssScore: 5.5,
+      },
+    ];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.startsWith('+') || line.startsWith('+++')) continue;
+      const lineNum = i + 1;
+      const file = files[0] ?? 'unknown';
+
+      for (const rule of rules) {
+        if (rule.pattern.test(line)) {
+          if (findings.some(f => f.title === rule.title)) continue;
+          findings.push({
+            id: crypto.randomUUID(),
+            category: 'security',
+            severity: rule.severity,
+            title: rule.title,
+            description: rule.description,
+            location: { file, startLine: lineNum, endLine: lineNum, snippet: line.slice(0, 120) },
+            recommendation: rule.recommendation,
+            confidence: 78,
+            cweId: rule.cweId,
+            cvssScore: rule.cvssScore,
+          });
+        }
+      }
+    }
+
+    return findings;
   }
 
   private extractFindings(settled: PromiseSettledResult<ReviewFinding[]>): ReviewFinding[] {

@@ -127,15 +127,13 @@ export class GatewayAgent extends BaseAgent {
         pull_request?: { number: number; head: { repo: { full_name: string } } };
       };
 
-      if (event === 'pull_request' && ['opened', 'synchronize', 'reopened'].includes(payload.action ?? '')) {
+      // Webhook events are acknowledged but NOT auto-processed.
+      // Reviews are triggered manually from the dashboard trigger button only.
+      if (event === 'pull_request') {
         const prNumber = payload.pull_request?.number;
-        const [owner, repo] = (payload.pull_request?.head.repo.full_name ?? '/').split('/');
-
-        if (prNumber && owner && repo) {
-          res.json({ status: 'processing', prNumber });
-          await this.processPR(owner, repo, prNumber);
-          return;
-        }
+        logger.info('GitHub webhook received — awaiting manual trigger', { action: payload.action, prNumber });
+        res.json({ status: 'acknowledged', message: 'manual trigger required', prNumber });
+        return;
       }
 
       res.json({ status: 'ignored', event });
