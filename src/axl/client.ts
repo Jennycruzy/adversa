@@ -132,8 +132,12 @@ export class AXLClient {
       peers?: Array<{
         peer_id?: string;
         peerId?: string;
+        public_key?: string;
+        publicKey?: string;
+        uri?: string;
         address: string;
         online: boolean;
+        up?: boolean;
         services?: string[];
         agent_role?: string;
         agentRole?: string;
@@ -158,9 +162,9 @@ export class AXLClient {
     return {
       selfPeerId,
       peers: (body.peers ?? []).map(p => ({
-        peerId: p.peer_id ?? p.peerId ?? '',
-        address: p.address,
-        online: p.online,
+        peerId: p.peer_id ?? p.peerId ?? p.public_key ?? p.publicKey ?? '',
+        address: p.address ?? p.uri ?? '',
+        online: p.online ?? p.up ?? false,
         services: p.services ?? [],
         agentRole: p.agent_role ?? p.agentRole,
         latencyMs: p.latency_ms ?? p.latencyMs,

@@ -1,23 +1,24 @@
-FROM golang:1.25-bookworm AS builder
+FROM node:20-slim AS base
+WORKDIR /app
 
-ARG AXL_REPO=https://github.com/gensyn-ai/axl.git
-ARG AXL_REF=main
+RUN npm install -g pnpm@9
 
-WORKDIR /src
-RUN git clone --depth 1 --branch "${AXL_REF}" "${AXL_REPO}" axl
-WORKDIR /src/axl
-RUN make build
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
-FROM debian:bookworm-slim
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN pnpm build
+
+FROM node:20-slim AS runtime
+WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl openssl \
+  && apt-get install -y --no-install-recommends curl \
   && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-COPY --from=builder /src/axl/node /usr/local/bin/axl-node
-COPY scripts/run-axl-node.sh /usr/local/bin/run-axl-node
-RUN chmod +x /usr/local/bin/run-axl-node
+COPY --from=base /app/node_modules ./node_modules
+COPY --from=base /app/dist ./dist
 
-EXPOSE 9001 9002
-ENTRYPOINT ["run-axl-node"]
+EXPOSE 9002
+CMD ["node", "dist/axl-broker/server.js"]

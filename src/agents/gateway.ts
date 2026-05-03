@@ -8,6 +8,7 @@ import { GitHubClient } from '../integrations/github.js';
 import { OfflineQueue } from '../offline/queue.js';
 import { SyncEngine } from '../offline/sync.js';
 import { ConnectivityDetector } from '../offline/detector.js';
+import type { AgentSnapshot } from '../dashboard/server.js';
 import {
   startDashboardServer,
   emitMeshEvent,
@@ -15,8 +16,9 @@ import {
   registerTeeProviderLister,
   registerTriggerReviewHandler,
   registerOfflineModeHandler,
+  registerAgentSnapshotProvider,
 } from '../dashboard/server.js';
-import { config } from '../config.js';
+import { config, AgentRole } from '../config.js';
 import { logger } from '../utils/logger.js';
 
 export class GatewayAgent extends BaseAgent {
@@ -70,6 +72,35 @@ export class GatewayAgent extends BaseAgent {
     this.syncEngine = new SyncEngine(this.queue, this.detector);
 
     registerOfflineModeHandler(enabled => this.detector.setForcedOffline(enabled));
+    registerAgentSnapshotProvider(async () => {
+      const topo = await this.axl.getTopology().catch(err => {
+        logger.warn('Failed to refresh agent snapshot from AXL topology', { err });
+        return { peers: [] };
+      });
+
+      const agents: AgentSnapshot[] = [
+        {
+          peerId: this.peerId || `${this.role}-local`,
+          role: this.role,
+          online: true,
+          status: this.currentStatus,
+          reputationScore: this.reputationScore,
+        },
+      ];
+
+      for (const peer of topo.peers ?? []) {
+        agents.push({
+          peerId: peer.peerId,
+          role: (peer.agentRole ?? 'gateway') as AgentRole,
+          address: peer.address,
+          online: peer.online,
+          status: 'idle',
+          reputationScore: 0,
+        });
+      }
+
+      return agents;
+    });
 
     this.pipeline = new ReviewPipeline(
       this.axl,

@@ -177,15 +177,58 @@ app.post('/api/trigger-review', async (req, res) => {
   }
 });
 
+export type AgentSnapshot = {
+  peerId: string;
+  role?: string;
+  address?: string;
+  online?: boolean;
+  status?: string;
+  reputationScore?: number;
+};
+
+let agentSnapshotProvider: (() => Promise<AgentSnapshot[]> | AgentSnapshot[]) | null = null;
+
+export function registerAgentSnapshotProvider(
+  provider: () => Promise<AgentSnapshot[]> | AgentSnapshot[]
+): void {
+  agentSnapshotProvider = provider;
+}
+
+async function refreshAgentSnapshot(): Promise<void> {
+  if (!agentSnapshotProvider) return;
+
+  try {
+    const agents = await agentSnapshotProvider();
+    for (const agent of agents) {
+      if (!agent.peerId) continue;
+      if (agent.online === false) {
+        emitMeshEvent('agent-offline', agent as unknown as Record<string, unknown>);
+      } else {
+        emitMeshEvent('agent-online', {
+          status: 'idle',
+          ...agent,
+        } as unknown as Record<string, unknown>);
+      }
+    }
+  } catch (err) {
+    logger.error('Agent snapshot refresh error', { err });
+  }
+}
+
 // Offline mode toggle (demo only)
-app.post('/api/offline-mode', (req, res) => {
+app.post('/api/offline-mode', async (req, res) => {
   const { enabled } = req.body as { enabled?: boolean };
   offlineModeEnabled = enabled ?? true;
   io.emit('offline-status', { online: !offlineModeEnabled, timestamp: Date.now() });
   if (offlineModeHandler) {
-    Promise.resolve(offlineModeHandler(offlineModeEnabled)).catch(err =>
-      logger.error('Offline mode handler error', { err })
-    );
+    try {
+      await Promise.resolve(offlineModeHandler(offlineModeEnabled));
+    } catch (err) {
+      logger.error('Offline mode handler error', { err });
+    }
+  }
+  if (!offlineModeEnabled) {
+    await refreshAgentSnapshot();
   }
   res.json({ success: true, offlineMode: offlineModeEnabled });
 });

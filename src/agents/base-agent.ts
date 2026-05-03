@@ -64,7 +64,16 @@ export abstract class BaseAgent {
     this.gossip.subscribe(GOSSIP_TOPICS.HEARTBEAT, (from, data) => {
       if (from !== this.peerId) {
         const hb = data as unknown as HeartbeatPayload;
-        this.topology.updatePeerRole(hb.peerId || from, hb.role);
+        const peerId = hb.peerId || from;
+        this.topology.updatePeerRole(peerId, hb.role);
+        // Always emit so the dashboard cache stays current — this is how
+        // agents reappear after a gateway restart or offline-mode toggle.
+        emitMeshEvent('agent-online', {
+          peerId,
+          role: hb.role,
+          status: hb.status ?? 'idle',
+          reputationScore: hb.reputationScore ?? 0,
+        });
         logger.debug('Heartbeat from peer', { from: from.slice(0, 12), role: hb.role });
       }
     });
